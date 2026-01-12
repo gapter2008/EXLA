@@ -5,14 +5,14 @@ node_modules
 .next
 out
 
-# environment variables
+# env files
 .env
-.env.local
-.env.production
-.env.development
+.env.*
+*.bak
 
 # Vercel
 .vercel
 
-# OS / editor junk
+# OS junk
 .DS_Store
+
