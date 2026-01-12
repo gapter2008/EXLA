@@ -255,7 +255,7 @@ export async function GET(req: NextRequest) {
       await logOAuthEvent('tiktok', requestId, 'callback', 'fail', `OAuth error: ${error}`, null, {
         error_code: ERROR_CODES.OAUTH_ERROR,
         error: error,
-        error_description: errorDescription || null,
+        error_description: errorDescription ?? undefined,
       });
       
       return NextResponse.redirect(
