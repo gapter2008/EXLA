@@ -412,9 +412,9 @@ export async function GET(req: NextRequest) {
       });
       await logOAuthEvent('tiktok', requestId, 'callback', 'fail', 'Missing TikTok credentials', userId, {
         error_code: 'TT_NO_CREDENTIALS',
-        has_client_key: !!clientKey,
-        has_client_secret: !!clientSecret,
-      });
+        has_key: !!clientKey,
+        has_secret: !!clientSecret,
+      });      
       
       return NextResponse.redirect(
         `${origin}/auth/tiktok/result?status=fail&reason=TT_NO_CREDENTIALS`
