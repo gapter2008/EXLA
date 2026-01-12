@@ -236,12 +236,20 @@ export async function GET(req: NextRequest) {
 
   try {
     // Log callback received
-    await logOAuthEvent('tiktok', requestId, 'callback', 'ok', 'Callback received', null, {
-      has_code: !!code,
-      has_state: !!state,
-      has_error: !!error,
-      error: error ?? undefined,
-    });
+    await logOAuthEvent(
+      'tiktok',
+      requestId,
+      'callback',
+      'ok',
+      'Callback received',
+      null,
+      {
+        has_code: !!code,
+        has_state: !!state,
+        has_error: !!error,
+        ...(error ? { error } : {}),
+      }
+    );    
 
     console.log(`[TikTok OAuth Callback] Request ${requestId}: Callback received`, {
       hasCode: !!code,
@@ -252,11 +260,19 @@ export async function GET(req: NextRequest) {
     // Handle OAuth error from TikTok
     if (error) {
       console.error(`[TikTok OAuth Callback] Request ${requestId}: OAuth error:`, error);
-      await logOAuthEvent('tiktok', requestId, 'callback', 'fail', `OAuth error: ${error}`, null, {
-        error_code: ERROR_CODES.OAUTH_ERROR,
-        error: error,
-        error_description: errorDescription ?? undefined,
-      });
+      await logOAuthEvent(
+        'tiktok',
+        requestId,
+        'callback',
+        'fail',
+        `OAuth error: ${error}`,
+        null,
+        {
+          error_code: ERROR_CODES.OAUTH_ERROR,
+          ...(error ? { error } : {}),
+          ...(errorDescription ? { error_description: errorDescription } : {}),
+        }
+      );      
       
       return NextResponse.redirect(
         `${origin}/auth/tiktok/result?status=fail&reason=${ERROR_CODES.OAUTH_ERROR}&error=${encodeURIComponent(error)}`
