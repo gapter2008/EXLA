@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "postinstall": "if [ -z \"\" ]; then patch -p0 < patches/openai-esm-cjs.patch || true; else echo \"Skipping patch on Vercel\"; fi"
+    "postinstall": "if [ -z \"$VERCEL\" ]; then patch -p0 < patches/openai-esm-cjs.patch || true; else echo \"Skipping patch on Vercel\"; fi"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.89.0",
