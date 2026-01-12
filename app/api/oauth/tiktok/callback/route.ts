@@ -240,7 +240,7 @@ export async function GET(req: NextRequest) {
       has_code: !!code,
       has_state: !!state,
       has_error: !!error,
-      error: error || null,
+      error: error ?? undefined,
     });
 
     console.log(`[TikTok OAuth Callback] Request ${requestId}: Callback received`, {
@@ -577,7 +577,7 @@ export async function GET(req: NextRequest) {
           http_status: httpStatus,
           response_body: errorBody,
           error: parsedError?.error || 'unknown',
-          error_description: parsedError?.error_description || null,
+          error_description: errorDescription ?? undefined,
           log_id: parsedError?.log_id || null,
         });
         
