@@ -68,11 +68,16 @@ export async function GET(req: NextRequest) {
       contacts.push({ type: 'linkedin', label: 'LinkedIn', value: contactInfo.linkedin_url });
     }
 
-    // Map 'partial' to 'complete' for UI (partial means website/contact page found, which is success)
-    // Both 'complete' and 'partial' should be treated as success in the UI
-    const uiStatus = (contactInfo.enrichment_status === 'partial' || contactInfo.enrichment_status === 'complete')
-      ? 'complete' 
-      : contactInfo.enrichment_status;
+// Normalize status for UI
+type EnrichmentStatus = "none" | "partial" | "complete" | "failed";
+
+const rawStatus: EnrichmentStatus =
+  (contactInfo.enrichment_status as EnrichmentStatus) ?? "none";
+
+// Treat 'partial' as success in UI
+const uiStatus: "none" | "complete" | "failed" =
+  rawStatus === "partial" || rawStatus === "complete" ? "complete" : rawStatus;
+
 
     return NextResponse.json({
       status: uiStatus,
