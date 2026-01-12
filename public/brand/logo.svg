@@ -1,0 +1,16 @@
+<!-- TODO: Replace with real Exla logo. Placeholder X mark using brand gradient -->
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Exla logo">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ec4899"/>
+      <stop offset="100%" stop-color="#22d3ee"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="24" fill="#000"/>
+  <path d="M26 26 L54 26 L64 44 L74 26 L102 26 L76 64 L102 102 L74 102 L64 84 L54 102 L26 102 L52 64 Z" fill="url(#g)"/>
+  <title>Exla</title>
+  <desc>Placeholder brand logo</desc>
+  <!-- Place your official logo at /public/brand/logo.svg and remove this comment. -->
+</svg>
+
+

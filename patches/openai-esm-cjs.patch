@@ -1,0 +1,8 @@
+*** Begin Patch
+*** Update File: node_modules/openai/dist/index.js
+@@
+- // This patch ensures openai works in Next.js edge/serverless by avoiding dynamic require fallbacks
+-
+*** End Patch
+
+
