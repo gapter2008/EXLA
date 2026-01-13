@@ -595,7 +595,7 @@ export async function GET(req: NextRequest) {
           log_id: parsedError?.log_id || null,
         });
         
-        let errorCode = ERROR_CODES.EXCHANGE_FAILED;
+        let errorCode: string = ERROR_CODES.EXCHANGE_FAILED;
         let errorMessage = 'Failed to exchange authorization code for access token';
         let failureReasons: string[] = [];
         
@@ -649,7 +649,7 @@ export async function GET(req: NextRequest) {
         if (httpStatus === 401 && errorCode === ERROR_CODES.EXCHANGE_FAILED) {
           errorCode = ERROR_CODES.EXCHANGE_401;
         }
-        if (httpStatus === 403) {
+        if (httpStatus === 403 && errorCode === ERROR_CODES.EXCHANGE_FAILED) {
           errorCode = ERROR_CODES.EXCHANGE_403;
         }
         
@@ -657,14 +657,9 @@ export async function GET(req: NextRequest) {
           error_code: errorCode,
           http_status: httpStatus,
           error: parsedError?.error || 'unknown',
-          error_description: parsedError?.error_description || responseText.substring(0, 200),
-          log_id: parsedError?.log_id || null,
-          client_key_length: clientKey?.length || 0,
-          client_key_prefix: clientKey ? clientKey.substring(0, 6) : null,
-          client_secret_length: clientSecret?.length || 0,
           redirect_uri: redirectUri,
-          token_endpoint: tokenEndpoint,
-          failure_reasons: failureReasons.length > 0 ? failureReasons : null,
+          has_client_key: !!clientKey,
+          has_secret: !!clientSecret,
         });
         
         // Update scan job to failed
@@ -703,7 +698,6 @@ export async function GET(req: NextRequest) {
         await logOAuthEvent('tiktok', requestId, 'exchange', 'fail', `TikTok API error: ${tokenData.error}`, userId, {
           error_code: ERROR_CODES.EXCHANGE_FAILED,
           error: tokenData.error,
-          error_description: tokenData.error_description || null,
         });
         
         return NextResponse.redirect(
