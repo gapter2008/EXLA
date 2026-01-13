@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { CheckCircle2, XCircle, RefreshCw } from "lucide-react";
 
@@ -65,7 +65,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   TT_CALLBACK_EXCEPTION: "Unexpected error during callback",
 };
 
-export default function TikTokResultPage() {
+function TikTokResultPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -217,6 +217,23 @@ export default function TikTokResultPage() {
         </div>
       </Container>
     </Screen>
+  );
+}
+
+export default function TikTokResultPage() {
+  return (
+    <Suspense fallback={
+      <Screen scroll={false}>
+        <Container>
+          <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
+            <p className="mt-4 text-gray-600">Loading...</p>
+          </div>
+        </Container>
+      </Screen>
+    }>
+      <TikTokResultPageContent />
+    </Suspense>
   );
 }
 

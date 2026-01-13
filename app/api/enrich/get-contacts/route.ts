@@ -12,6 +12,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getBrandContacts, getBrandContactsByName } from "@/lib/brandEnrichment";
 
 export const runtime = "nodejs";
+export const dynamic = 'force-dynamic'; // Prevent static generation - uses request.url
 
 export async function GET(req: NextRequest) {
   try {

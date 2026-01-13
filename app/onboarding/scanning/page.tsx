@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Loader2, Youtube } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
@@ -32,7 +32,7 @@ const statusMessages = [
   "Personalizing matches",
 ];
 
-export default function ScanningPage() {
+function ScanningPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const jobId = searchParams.get("job");
@@ -171,6 +171,21 @@ export default function ScanningPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function ScanningPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-white flex items-center justify-center px-6">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600 mx-auto"></div>
+          <p className="mt-4 text-gray-600">Loading...</p>
+        </div>
+      </div>
+    }>
+      <ScanningPageContent />
+    </Suspense>
   );
 }
 
