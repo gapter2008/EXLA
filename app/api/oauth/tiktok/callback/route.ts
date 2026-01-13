@@ -270,7 +270,6 @@ export async function GET(req: NextRequest) {
         {
           error_code: ERROR_CODES.OAUTH_ERROR,
           ...(error ? { error } : {}),
-          ...(errorDescription ? { error_description: errorDescription } : {}),
         }
       );      
       
