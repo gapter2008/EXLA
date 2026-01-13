@@ -657,8 +657,6 @@ export async function GET(req: NextRequest) {
           http_status: httpStatus,
           error: parsedError?.error || 'unknown',
           redirect_uri: redirectUri,
-          has_client_key: !!clientKey,
-          has_secret: !!clientSecret,
         });
         
         // Update scan job to failed
