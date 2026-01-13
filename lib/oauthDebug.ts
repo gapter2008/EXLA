@@ -40,4 +40,3 @@ export async function logOAuthEvent(
     console.error('[OAuth Debug] Failed to log event:', error.message);
   }
 }
-
