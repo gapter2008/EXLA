@@ -301,10 +301,6 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // Get code_verifier from cookie (more secure)
-    const codeVerifier = req.cookies.get('tiktok_code_verifier')?.value;
-    const cookieState = req.cookies.get('tiktok_state')?.value;
-
     // Decode state to get userId first (state is base64url encoded JSON)
     let stateData;
     try {
@@ -323,41 +319,128 @@ export async function GET(req: NextRequest) {
 
     const userId = stateData.userId;
 
-    if (!codeVerifier) {
-      console.error(`[TikTok OAuth Callback] Request ${requestId}: No code_verifier cookie (PKCE required)`);
-      await logOAuthEvent('tiktok', requestId, 'callback', 'fail', 'No code_verifier cookie', userId, {
+    // Lookup oauth state from database (primary source of truth)
+    // This ensures we can retrieve code_verifier even if cookies don't persist on Vercel
+    let oauthStateRow: any = null;
+    let finalCodeVerifier: string | null = null;
+    
+    if (supabaseAdmin) {
+      try {
+        const { data: dbStateRow, error: stateError } = await supabaseAdmin
+          .from('oauth_states')
+          .select('id, state, code_verifier, expires_at, created_at, user_id')
+          .eq('provider', 'tiktok')
+          .eq('state', state)
+          .maybeSingle();
+        
+        if (stateError) {
+          console.error(`[TikTok OAuth Callback] Request ${requestId}: Error looking up oauth state:`, {
+            errorCode: stateError.code,
+            errorMessage: stateError.message,
+            statePrefix: state.substring(0, 10),
+          });
+        } else if (dbStateRow) {
+          oauthStateRow = dbStateRow;
+          
+          // Check if expired
+          const expiresAt = new Date(dbStateRow.expires_at);
+          const now = new Date();
+          
+          if (expiresAt < now) {
+            console.error(`[TikTok OAuth Callback] Request ${requestId}: OAuth state expired`, {
+              statePrefix: state.substring(0, 10),
+              createdAt: dbStateRow.created_at,
+              expiresAt: dbStateRow.expires_at,
+              now: now.toISOString(),
+            });
+            
+            // Delete expired state
+            try {
+              await supabaseAdmin
+                .from('oauth_states')
+                .delete()
+                .eq('id', dbStateRow.id);
+            } catch (deleteErr: any) {
+              // Ignore delete errors
+            }
+            
+            await logOAuthEvent('tiktok', requestId, 'callback', 'fail', 'OAuth state expired', userId, {
+              error_code: ERROR_CODES.STATE_MISMATCH,
+            });
+            
+            return NextResponse.redirect(
+              `${origin}/auth/tiktok/result?status=fail&reason=${ERROR_CODES.STATE_MISMATCH}&details=${encodeURIComponent('State expired')}`
+            );
+          }
+          
+          // State found and valid - use stored code_verifier
+          finalCodeVerifier = dbStateRow.code_verifier;
+          
+          console.log(`[TikTok OAuth Callback] Request ${requestId}: OAuth state found in database`, {
+            statePrefix: state.substring(0, 10),
+            found: true,
+            expired: false,
+            createdAt: dbStateRow.created_at,
+            expiresAt: dbStateRow.expires_at,
+            userId: dbStateRow.user_id,
+          });
+        } else {
+          // State not found in database
+          console.error(`[TikTok OAuth Callback] Request ${requestId}: OAuth state not found in database`, {
+            statePrefix: state.substring(0, 10),
+            found: false,
+            userId,
+          });
+          
+          await logOAuthEvent('tiktok', requestId, 'callback', 'fail', 'OAuth state not found in database', userId, {
+            error_code: ERROR_CODES.STATE_MISMATCH,
+          });
+          
+          return NextResponse.redirect(
+            `${origin}/auth/tiktok/result?status=fail&reason=${ERROR_CODES.STATE_MISMATCH}&details=${encodeURIComponent('State not found')}`
+          );
+        }
+      } catch (err: any) {
+        console.error(`[TikTok OAuth Callback] Request ${requestId}: Exception looking up oauth state:`, {
+          errorMessage: err.message,
+          statePrefix: state.substring(0, 10),
+        });
+        
+        await logOAuthEvent('tiktok', requestId, 'callback', 'fail', `OAuth state lookup exception: ${err.message}`, userId, {
+          error_code: ERROR_CODES.STATE_MISMATCH,
+        });
+        
+        return NextResponse.redirect(
+          `${origin}/auth/tiktok/result?status=fail&reason=${ERROR_CODES.STATE_MISMATCH}&details=${encodeURIComponent(err.message || 'State lookup failed')}`
+        );
+      }
+    } else {
+      // Supabase admin not configured
+      console.error(`[TikTok OAuth Callback] Request ${requestId}: Supabase admin not configured - cannot lookup oauth state`);
+      
+      await logOAuthEvent('tiktok', requestId, 'callback', 'fail', 'Supabase admin not configured', userId, {
+        error_code: ERROR_CODES.STATE_MISMATCH,
+      });
+      
+      return NextResponse.redirect(
+        `${origin}/auth/tiktok/result?status=fail&reason=${ERROR_CODES.STATE_MISMATCH}&details=${encodeURIComponent('Database not configured')}`
+      );
+    }
+
+    if (!finalCodeVerifier) {
+      console.error(`[TikTok OAuth Callback] Request ${requestId}: TT_NO_VERIFIER - No code_verifier retrieved from database`, {
+        statePrefix: state.substring(0, 10),
+        oauthStateRowFound: !!oauthStateRow,
+        userId,
+      });
+      
+      await logOAuthEvent('tiktok', requestId, 'callback', 'fail', 'No code_verifier retrieved from database', userId, {
         error_code: ERROR_CODES.NO_VERIFIER,
       });
       
       return NextResponse.redirect(
         `${origin}/auth/tiktok/result?status=fail&reason=${ERROR_CODES.NO_VERIFIER}`
       );
-    }
-
-    // Validate state matches cookie (CSRF protection)
-    // If cookie state is missing but state parameter is valid, log warning but proceed
-    // (cookies may not persist through redirects due to domain/SameSite policies)
-    if (cookieState && cookieState !== state) {
-      console.error(`[TikTok OAuth Callback] Request ${requestId}: State mismatch`, {
-        cookieState: cookieState?.substring(0, 10),
-        paramState: state.substring(0, 10),
-      });
-      await logOAuthEvent('tiktok', requestId, 'callback', 'fail', 'State mismatch', userId, {
-        error_code: ERROR_CODES.STATE_MISMATCH,
-        state_prefix: state.substring(0, 6),
-      });
-      
-      return NextResponse.redirect(
-        `${origin}/auth/tiktok/result?status=fail&reason=${ERROR_CODES.STATE_MISMATCH}`
-      );
-    }
-    
-    // If cookie state is missing, log warning but proceed (state parameter itself provides some protection)
-    if (!cookieState) {
-      console.warn(`[TikTok OAuth Callback] Request ${requestId}: Cookie state missing (proceeding with URL state)`, {
-        userId,
-        statePrefix: state.substring(0, 10),
-      });
     }
     if (!userId) {
       console.error(`[TikTok OAuth Callback] Request ${requestId}: No userId in state`);
@@ -375,15 +458,17 @@ export async function GET(req: NextRequest) {
     const clientSecret = process.env.TIKTOK_CLIENT_SECRET?.trim();
     let redirectUri = process.env.TIKTOK_REDIRECT_URI?.trim();
     
-    // Normalize redirect_uri - remove trailing slashes for consistency
+    // Normalize redirect_uri - remove trailing slashes for consistency (must match start route exactly)
     if (redirectUri && redirectUri.endsWith('/')) {
       redirectUri = redirectUri.slice(0, -1);
     }
     
-    // If not explicitly set, derive from app URL (must match start route)
+    // If not explicitly set, derive from app URL (must match start route exactly)
     if (!redirectUri) {
       try {
         redirectUri = getOAuthRedirectUri('/api/oauth/tiktok/callback', req);
+        // Normalize the derived URI as well
+        redirectUri = redirectUri.replace(/\/$/, '');
       } catch (error: any) {
         await logOAuthEvent('tiktok', requestId, 'callback', 'fail', 'Could not determine redirect URI', userId, {
           error_code: 'TT_NO_REDIRECT_URI',
@@ -393,6 +478,9 @@ export async function GET(req: NextRequest) {
         );
       }
     }
+    
+    // Log the exact redirect URI being used (must match TikTok Developer Portal exactly)
+    console.log(`[TikTok OAuth Callback] Request ${requestId}: Using redirect URI: ${redirectUri}`);
     
     // Log credential presence (without exposing values)
     console.log(`[TikTok OAuth Callback] Request ${requestId}: Credential check:`, {
@@ -418,59 +506,185 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // Verify profile exists (profiles table must have a row for foreign key constraint)
-    // Try to get/create profile from auth.users if it doesn't exist
+    // Ensure profile exists (profiles table must have a row for foreign key constraint)
+    // Use maybeSingle() to avoid errors when no row exists
+    console.log(`[TikTok OAuth Callback] Request ${requestId}: Checking profile for user ${userId}`);
     const { data: existingProfile, error: profileCheckError } = await supabaseAdmin
       .from("profiles")
-      .select("id")
+      .select("id, email, role")
       .eq("id", userId)
-      .single();
+      .maybeSingle();
     
-    if (!existingProfile && profileCheckError?.code === 'PGRST116') {
-      // Profile doesn't exist - try to create it
+    // Log profile check result (no secrets)
+    console.log(`[TikTok OAuth Callback] Request ${requestId}: Profile check result:`, {
+      profileExists: !!existingProfile,
+      hasError: !!profileCheckError,
+      errorCode: profileCheckError?.code || null,
+      errorMessage: profileCheckError?.message || null,
+      userId,
+    });
+    
+    if (!existingProfile) {
+      // Profile doesn't exist - create it
       // Use a unique email based on userId to avoid conflicts
       console.log(`[TikTok OAuth Callback] Request ${requestId}: Profile not found, creating profile for user ${userId}`);
       
       try {
-        const { error: createError } = await supabaseAdmin
+        const profileData = {
+          id: userId,
+          email: `user_${userId.replace(/-/g, '')}@oauth.exla.dev`, // Unique email based on userId
+          role: "creator" as const,
+        };
+        
+        const { data: createdProfile, error: createError } = await supabaseAdmin
           .from("profiles")
-          .insert({
-            id: userId,
-            email: `user_${userId.replace(/-/g, '')}@oauth.exla.dev`, // Unique email based on userId
-            role: "creator",
-          });
+          .insert(profileData)
+          .select("id")
+          .single();
         
         if (createError) {
-          // If creation fails, it might be because user doesn't exist in auth.users
-          // Or email conflict - try with timestamp
-          console.warn(`[TikTok OAuth Callback] Request ${requestId}: Profile creation failed, trying with timestamp:`, createError.message);
-          const { error: retryError } = await supabaseAdmin
-            .from("profiles")
-            .insert({
+          // If creation fails due to email conflict, try with timestamp
+          if (createError.code === '23505' || createError.message?.includes('unique') || createError.message?.includes('duplicate')) {
+            console.warn(`[TikTok OAuth Callback] Request ${requestId}: Profile creation failed (email conflict), trying with timestamp:`, {
+              errorCode: createError.code,
+              errorMessage: createError.message,
+            });
+            
+            const retryProfileData = {
               id: userId,
               email: `user_${userId.replace(/-/g, '')}_${Date.now()}@oauth.exla.dev`,
-              role: "creator",
-            });
-          
-          if (retryError) {
-            console.error(`[TikTok OAuth Callback] Request ${requestId}: Cannot create profile after retry:`, retryError);
-            // Still continue - the scan job creation will fail with a clearer error
+              role: "creator" as const,
+            };
+            
+            const { data: retryProfile, error: retryError } = await supabaseAdmin
+              .from("profiles")
+              .insert(retryProfileData)
+              .select("id")
+              .single();
+            
+            if (retryError) {
+              console.error(`[TikTok OAuth Callback] Request ${requestId}: Profile creation failed after retry:`, {
+                errorCode: retryError.code,
+                errorMessage: retryError.message,
+                errorDetails: retryError.details,
+                userId,
+              });
+              
+              await logOAuthEvent('tiktok', requestId, 'callback', 'fail', `Profile creation failed: ${retryError.message}`, userId, {
+                error_code: ERROR_CODES.PROFILE_CHECK_FAILED,
+              });
+              
+              return NextResponse.redirect(
+                `${origin}/auth/tiktok/result?status=fail&reason=${ERROR_CODES.PROFILE_CHECK_FAILED}&details=${encodeURIComponent(retryError.message || 'Profile creation failed')}`
+              );
+            } else {
+              console.log(`[TikTok OAuth Callback] Request ${requestId}: Created profile for user ${userId} (with timestamp)`);
+            }
           } else {
-            console.log(`[TikTok OAuth Callback] Request ${requestId}: Created profile for user ${userId} (with timestamp)`);
+            // Other error (e.g., foreign key constraint, missing column, etc.)
+            console.error(`[TikTok OAuth Callback] Request ${requestId}: Profile creation failed:`, {
+              errorCode: createError.code,
+              errorMessage: createError.message,
+              errorDetails: createError.details,
+              errorHint: createError.hint,
+              userId,
+            });
+            
+            await logOAuthEvent('tiktok', requestId, 'callback', 'fail', `Profile creation failed: ${createError.message}`, userId, {
+              error_code: ERROR_CODES.PROFILE_CHECK_FAILED,
+            });
+            
+            return NextResponse.redirect(
+              `${origin}/auth/tiktok/result?status=fail&reason=${ERROR_CODES.PROFILE_CHECK_FAILED}&details=${encodeURIComponent(createError.message || 'Profile creation failed')}`
+            );
           }
         } else {
-          console.log(`[TikTok OAuth Callback] Request ${requestId}: Created profile for user ${userId}`);
+          console.log(`[TikTok OAuth Callback] Request ${requestId}: Created profile for user ${userId}`, {
+            profileId: createdProfile?.id,
+          });
         }
       } catch (createErr: any) {
-        console.error(`[TikTok OAuth Callback] Request ${requestId}: Exception creating profile:`, createErr);
-        // Continue anyway - let scan job creation fail with clearer error if user doesn't exist in auth.users
+        console.error(`[TikTok OAuth Callback] Request ${requestId}: Exception creating profile:`, {
+          errorMessage: createErr.message,
+          errorStack: createErr.stack?.substring(0, 200),
+          userId,
+        });
+        
+        await logOAuthEvent('tiktok', requestId, 'callback', 'fail', `Profile creation exception: ${createErr.message}`, userId, {
+          error_code: ERROR_CODES.PROFILE_CHECK_FAILED,
+        });
+        
+        return NextResponse.redirect(
+          `${origin}/auth/tiktok/result?status=fail&reason=${ERROR_CODES.PROFILE_CHECK_FAILED}&details=${encodeURIComponent(createErr.message || 'Profile creation exception')}`
+        );
       }
-    } else if (!existingProfile && profileCheckError?.code !== 'PGRST116') {
-      // Profile check failed with unexpected error
-      console.error(`[TikTok OAuth Callback] Request ${requestId}: Profile check failed:`, profileCheckError);
-      return NextResponse.redirect(`${origin}/auth/tiktok/result?status=fail&reason=TT_PROFILE_CHECK_FAILED`);
+      
+      // Verify profile was created successfully
+      const { data: verifyProfile, error: verifyError } = await supabaseAdmin
+        .from("profiles")
+        .select("id")
+        .eq("id", userId)
+        .maybeSingle();
+      
+      if (!verifyProfile) {
+        console.error(`[TikTok OAuth Callback] Request ${requestId}: Profile verification failed after creation attempt`, {
+          verifyError: verifyError?.message,
+          userId,
+        });
+        
+        await logOAuthEvent('tiktok', requestId, 'callback', 'fail', 'Profile verification failed after creation', userId, {
+          error_code: ERROR_CODES.PROFILE_CHECK_FAILED,
+        });
+        
+        return NextResponse.redirect(
+          `${origin}/auth/tiktok/result?status=fail&reason=${ERROR_CODES.PROFILE_CHECK_FAILED}&details=${encodeURIComponent('Profile verification failed')}`
+        );
+      }
+    } else {
+      // Profile exists - log success
+      console.log(`[TikTok OAuth Callback] Request ${requestId}: Profile exists for user ${userId}`, {
+        profileId: existingProfile.id,
+        hasEmail: !!existingProfile.email,
+        role: existingProfile.role,
+      });
     }
+    
+    // If we get here, profile is guaranteed to exist
+// HARD GUARANTEE: ensure profiles row exists before scan_jobs insert (FK requirement)
+try {
+  const { error: ensureProfileErr } = await supabaseAdmin
+    .from("profiles")
+    .upsert(
+      {
+        id: userId,
+        role: "creator",
+        // optional: only include email if your schema requires it
+        email: `user_${userId.replace(/-/g, '')}@oauth.exla.dev`,
+      },
+      { onConflict: "id" }
+    );
 
+  if (ensureProfileErr) {
+    console.error(`[TikTok OAuth Callback] Request ${requestId}: Failed to upsert profile before scan job:`, {
+      code: ensureProfileErr.code,
+      message: ensureProfileErr.message,
+      details: ensureProfileErr.details,
+    });
+
+    return NextResponse.redirect(
+      `${origin}/auth/tiktok/result?status=fail&reason=${ERROR_CODES.PROFILE_CHECK_FAILED}&details=${encodeURIComponent(
+        ensureProfileErr.message || "Profile upsert failed"
+      )}`
+    );
+  }
+} catch (e: any) {
+  console.error(`[TikTok OAuth Callback] Request ${requestId}: Exception during profile upsert before scan job:`, e?.message);
+  return NextResponse.redirect(
+    `${origin}/auth/tiktok/result?status=fail&reason=${ERROR_CODES.PROFILE_CHECK_FAILED}&details=${encodeURIComponent(
+      e?.message || "Profile upsert exception"
+    )}`
+  );
+}
     // Create scan job (before token exchange, matching YouTube pattern)
     console.log(`[TikTok OAuth Callback] Request ${requestId}: Creating scan job for user:`, userId);
     // #region agent log
@@ -532,6 +746,10 @@ export async function GET(req: NextRequest) {
     console.log(`[TikTok OAuth Callback] Request ${requestId}: Exchanging code for token...`);
     await updateScanJob(scanJob.id, { status: "running", progress: 10 });
     
+    // Normalize redirect URI (must match exactly what was used in authorize request)
+    // IMPORTANT: redirect_uri must match EXACTLY what's configured in TikTok Developer Portal
+    const normalizedRedirectUri = redirectUri.replace(/\/$/, ''); // Ensure no trailing slash
+    
     // Prepare token exchange parameters
     const tokenEndpoint = "https://open.tiktokapis.com/v2/oauth/token/";
     const tokenBody = new URLSearchParams({
@@ -539,8 +757,8 @@ export async function GET(req: NextRequest) {
       client_secret: clientSecret,
       code: code,
       grant_type: "authorization_code",
-      redirect_uri: redirectUri,
-      code_verifier: codeVerifier,
+      redirect_uri: normalizedRedirectUri, // Must match exactly what's in TikTok Developer Portal and authorize request
+      code_verifier: finalCodeVerifier,
     });
 
     // Detailed debug logging before token exchange
@@ -554,10 +772,10 @@ export async function GET(req: NextRequest) {
         client_secret_length: clientSecret.length,
         code_length: code.length,
         code_prefix: code.substring(0, 8) + '...',
-        redirect_uri: redirectUri,
+        redirect_uri: normalizedRedirectUri,
         grant_type: 'authorization_code',
-        code_verifier_present: !!codeVerifier,
-        code_verifier_length: codeVerifier?.length || 0,
+        code_verifier_present: !!finalCodeVerifier,
+        code_verifier_length: finalCodeVerifier?.length || 0,
       },
     });
 
@@ -612,8 +830,8 @@ export async function GET(req: NextRequest) {
           if (clientKey && clientSecret) {
             failureReasons.push('client_key or client_secret do not match TikTok Developer Portal');
           }
-          if (redirectUri) {
-            failureReasons.push(`redirect_uri mismatch: "${redirectUri}" may not match TikTok Developer Portal or authorize request`);
+          if (normalizedRedirectUri) {
+            failureReasons.push(`redirect_uri mismatch: "${normalizedRedirectUri}" must match EXACTLY what's configured in TikTok Developer Portal → Basic Information → Platform Information → Redirect URL`);
           }
           
           errorMessage = parsedError?.error_description || 
@@ -626,7 +844,7 @@ export async function GET(req: NextRequest) {
             '✓ client_secret present': clientSecret ? `YES (length: ${clientSecret.length})` : 'MISSING',
             '✓ redirect_uri used': redirectUri || 'MISSING',
             '✓ token endpoint': tokenEndpoint,
-            '✓ PKCE verifier present': codeVerifier ? `YES (length: ${codeVerifier.length})` : 'NO',
+            '✓ PKCE verifier present': finalCodeVerifier ? `YES (length: ${finalCodeVerifier.length})` : 'NO',
             '✓ parameter names': 'client_key, client_secret, code, grant_type, redirect_uri, code_verifier',
             '✓ Content-Type': 'application/x-www-form-urlencoded',
             '✓ request method': 'POST',
@@ -634,8 +852,8 @@ export async function GET(req: NextRequest) {
             troubleshooting: [
               '1. Verify TIKTOK_CLIENT_KEY matches "Client Key" in TikTok Developer Portal → Basic Information',
               '2. Verify TIKTOK_CLIENT_SECRET matches "Client Secret" in TikTok Developer Portal → Basic Information',
-              '3. Verify TIKTOK_REDIRECT_URI matches "Redirect URL" in TikTok Developer Portal → Basic Information → Platform Information',
-              '4. Ensure redirect_uri in token request matches exactly what was used in authorize request',
+              '3. Verify TIKTOK_REDIRECT_URI matches "Redirect URL" in TikTok Developer Portal → Basic Information → Platform Information EXACTLY (no trailing slashes, same protocol)',
+              '4. Ensure redirect_uri in token request matches EXACTLY what was used in authorize request (case-sensitive, no trailing slashes)',
               '5. Check .env.local has no extra quotes or whitespace around values',
               '6. Restart dev server after changing .env.local',
             ],
@@ -656,7 +874,7 @@ export async function GET(req: NextRequest) {
           error_code: errorCode,
           http_status: httpStatus,
           error: parsedError?.error || 'unknown',
-          redirect_uri: redirectUri,
+          redirect_uri: normalizedRedirectUri,
         });
         
         // Update scan job to failed
@@ -666,6 +884,18 @@ export async function GET(req: NextRequest) {
         });
         
         // Build redirect URL with error details
+        // Delete oauth_states row on failure (prevent reuse of failed state)
+        if (oauthStateRow?.id && supabaseAdmin) {
+          try {
+            await supabaseAdmin
+              .from('oauth_states')
+              .delete()
+              .eq('id', oauthStateRow.id);
+          } catch (deleteErr: any) {
+            console.warn(`[TikTok OAuth Callback] Request ${requestId}: Could not delete oauth state row on error: ${deleteErr.message}`);
+          }
+        }
+        
         const redirectUrl = new URL(`${origin}/onboarding/scanning`);
         redirectUrl.searchParams.set('job', scanJob.id);
         redirectUrl.searchParams.set('error', errorMessage);
@@ -861,31 +1091,72 @@ export async function GET(req: NextRequest) {
       await updateScanJob(scanJob.id, { progress: 50, status: "running" });
       
       try {
-        await scanProviderAccount(userId, "tiktok");
-        console.log(`[TikTok OAuth Callback] Request ${requestId}: Scan pipeline completed`);
-        await updateScanJob(scanJob.id, { progress: 80 });
+        const scanResult = await scanProviderAccount(userId, "tiktok");
+        console.log(`[TikTok OAuth Callback] Request ${requestId}: Scan pipeline completed`, {
+          isPartial: scanResult.is_partial || false,
+          partialReason: scanResult.partial_reason || undefined,
+        });
+        
+        // Check if scan was partial (some data unavailable due to missing scopes)
+        if (scanResult.is_partial) {
+          console.log(`[TikTok OAuth Callback] Request ${requestId}: Scan completed with partial data: ${scanResult.partial_reason}`);
+          await updateScanJob(scanJob.id, {
+            progress: 80,
+            status: "complete",
+            error: scanResult.partial_reason || "Partial scan completed (some data unavailable)",
+          });
+        } else {
+          await updateScanJob(scanJob.id, { progress: 80 });
+        }
       } catch (scanErr: any) {
-        console.error(`[TikTok OAuth Callback] Request ${requestId}: Scan pipeline failed:`, scanErr.message);
+        console.error(`[TikTok OAuth Callback] Request ${requestId}: Scan pipeline failed:`, {
+          errorMessage: scanErr.message,
+          errorCode: scanErr.code,
+          errorStatus: scanErr.status,
+        });
         
         // Map error codes to user-friendly error codes
         let errorCode = scanErr.code || ERROR_CODES.SCAN_JOB_FAILED;
         if (scanErr.code === "TT_NO_TOKEN_FOR_USER") {
           errorCode = ERROR_CODES.NO_TOKEN_FOR_USER;
         } else if (scanErr.code === "TT_MISSING_SCOPE") {
+          // Missing scope during profile fetch is fatal - cannot proceed
           errorCode = ERROR_CODES.MISSING_SCOPE;
         }
         
-        await updateScanJob(scanJob.id, {
-          status: "failed",
-          error: `Scan failed: ${scanErr.message}`,
-        });
+        // Only fail for truly fatal errors:
+        // - No token for user (cannot scan without token)
+        // - Missing scope for basic profile (cannot proceed without profile)
+        // - Database errors (cannot save results)
+        // Everything else (missing stats/videos scope) should be handled as partial success in scanProviderAccount
         
-        // Redirect with error code if it's a known error
-        if (errorCode === ERROR_CODES.NO_TOKEN_FOR_USER || errorCode === ERROR_CODES.MISSING_SCOPE) {
-          return NextResponse.redirect(`${origin}/auth/tiktok/result?status=fail&reason=${errorCode}`);
+        const isFatalError = 
+          errorCode === ERROR_CODES.NO_TOKEN_FOR_USER ||
+          errorCode === ERROR_CODES.MISSING_SCOPE ||
+          scanErr.message?.includes("Database") ||
+          scanErr.message?.includes("database");
+        
+        if (isFatalError) {
+          await updateScanJob(scanJob.id, {
+            status: "failed",
+            error: `Scan failed: ${scanErr.message}`,
+          });
+          
+          // Redirect with error code if it's a known fatal error
+          if (errorCode === ERROR_CODES.NO_TOKEN_FOR_USER || errorCode === ERROR_CODES.MISSING_SCOPE) {
+            return NextResponse.redirect(`${origin}/auth/tiktok/result?status=fail&reason=${errorCode}`);
+          }
+          
+          return NextResponse.redirect(`${origin}/onboarding/scanning?job=${scanJob.id}&error=${encodeURIComponent(scanErr.message)}`);
+        } else {
+          // Non-fatal error - treat as partial success and continue
+          console.warn(`[TikTok OAuth Callback] Request ${requestId}: Non-fatal scan error, treating as partial success:`, scanErr.message);
+          await updateScanJob(scanJob.id, {
+            progress: 80,
+            status: "complete",
+            error: `Partial scan completed with warnings: ${scanErr.message}`,
+          });
         }
-        
-        return NextResponse.redirect(`${origin}/onboarding/scanning?job=${scanJob.id}&error=${encodeURIComponent(scanErr.message)}`);
       }
 
       // Generate media kit after metrics are stored
@@ -968,11 +1239,29 @@ export async function GET(req: NextRequest) {
       console.log(`[TikTok OAuth Callback] Request ${requestId}: Scan complete, redirecting to scanning page`);
       await logOAuthEvent('tiktok', requestId, 'redirect', 'ok', 'Redirecting to scanning page', userId);
 
-      // Clear cookies
+      // Delete oauth_states row after successful token exchange (prevent reuse)
+      if (oauthStateRow?.id && supabaseAdmin) {
+        try {
+          await supabaseAdmin
+            .from('oauth_states')
+            .delete()
+            .eq('id', oauthStateRow.id);
+          
+          console.log(`[TikTok OAuth Callback] Request ${requestId}: OAuth state row deleted after successful exchange`);
+        } catch (deleteErr: any) {
+          // Log but don't fail - cleanup is best effort
+          console.warn(`[TikTok OAuth Callback] Request ${requestId}: Could not delete oauth state row: ${deleteErr.message}`);
+        }
+      }
+
+      // Clear lightweight state cookie (optional correlation cookie)
       const response = NextResponse.redirect(`${origin}/onboarding/scanning?job=${scanJob.id}`);
+      response.cookies.delete('tiktok_oauth_state');
+      // Also clear old cookie names if they exist (for migration)
       response.cookies.delete('tiktok_code_verifier');
       response.cookies.delete('tiktok_state');
       response.cookies.delete('tiktok_request_id');
+      response.cookies.delete('tiktok_pkce_verifier'); // Legacy cookie name
       
       return response;
     } catch (tokenErr: any) {
