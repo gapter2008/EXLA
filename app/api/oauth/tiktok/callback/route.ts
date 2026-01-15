@@ -1091,23 +1091,9 @@ try {
       await updateScanJob(scanJob.id, { progress: 50, status: "running" });
       
       try {
-        const scanResult = await scanProviderAccount(userId, "tiktok");
-        console.log(`[TikTok OAuth Callback] Request ${requestId}: Scan pipeline completed`, {
-          isPartial: scanResult.is_partial || false,
-          partialReason: scanResult.partial_reason || undefined,
-        });
-        
-        // Check if scan was partial (some data unavailable due to missing scopes)
-        if (scanResult.is_partial) {
-          console.log(`[TikTok OAuth Callback] Request ${requestId}: Scan completed with partial data: ${scanResult.partial_reason}`);
-          await updateScanJob(scanJob.id, {
-            progress: 80,
-            status: "complete",
-            error: scanResult.partial_reason || "Partial scan completed (some data unavailable)",
-          });
-        } else {
-          await updateScanJob(scanJob.id, { progress: 80 });
-        }
+        await scanProviderAccount(userId, "tiktok");
+        console.log(`[TikTok OAuth Callback] Request ${requestId}: Scan pipeline completed`);
+        await updateScanJob(scanJob.id, { progress: 80 });
       } catch (scanErr: any) {
         console.error(`[TikTok OAuth Callback] Request ${requestId}: Scan pipeline failed:`, {
           errorMessage: scanErr.message,
