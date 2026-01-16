@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
 import { useOnboarding } from '@/context/OnboardingContext';
+import { goOnboarding } from '@/lib/safeNavigate';
 
 export function OnboardingGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -46,11 +47,10 @@ export function OnboardingGuard({ children }: { children: React.ReactNode }) {
     // If onboarding is not completed, redirect to onboarding
     // Only redirect if onboarding_completed is explicitly false or null
     const step = profile.onboarding_step || 'welcome';
-    // Map step to valid route - use const assertion for type safety
-    const validSteps = ['welcome', 'profile', 'connect', 'scanning', 'complete'] as const;
-    type OnboardingStep = typeof validSteps[number];
-    const safeStep: OnboardingStep = validSteps.includes(step as OnboardingStep) ? (step as OnboardingStep) : 'welcome';
-    router.replace(`/onboarding/${safeStep}` as `/onboarding/${OnboardingStep}`);
+    // Map step to valid route
+    const validSteps = ['welcome', 'profile', 'connect', 'scanning', 'complete'];
+    const safeStep = validSteps.includes(step) ? step : 'welcome';
+    goOnboarding(router, safeStep);
   }, [user, profile, authLoading, onboardingLoading, pathname, router]);
 
   // Always render children for logged-out users (they need to see landing screen)

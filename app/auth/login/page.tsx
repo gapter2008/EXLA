@@ -3,6 +3,7 @@ import { supabase } from "@/lib/supabaseClient";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { goOnboarding } from "@/lib/safeNavigate";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -63,7 +64,7 @@ export default function LoginPage() {
           const step = profile?.onboarding_step || 'welcome';
           const validSteps = ['welcome', 'profile', 'connect', 'scanning', 'complete'];
           const safeStep = validSteps.includes(step) ? step : 'welcome';
-          router.replace(`/onboarding/${safeStep}` as any);
+          goOnboarding(router, safeStep);
         }
       }
     } catch (err: any) {

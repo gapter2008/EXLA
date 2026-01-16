@@ -12,6 +12,7 @@ import { useOnboarding } from '../context/OnboardingContext';
 import { getMediaKitData, type MediaKitData } from '../lib/getMediaKitData';
 import { StickyFooterCTA } from '../components/StickyFooterCTA';
 import { PageContainer } from '../components/PageContainer';
+import { goOnboardingPush } from '../lib/safeNavigate';
 
 // Global User Data Store Context
 interface UserDataStore {
@@ -1396,7 +1397,7 @@ const PublicMediaKit = ({ onClose }: { onClose: () => void }) => {
       }
 
       // Navigate to scanning screen with job ID
-      router.push(`/onboarding/scanning?job=${data.scan_job_id}`);
+      goOnboardingPush(router, 'scanning', `job=${data.scan_job_id}`);
       // Don't set scanning(false) here - let the scanning page handle state
     } catch (err: any) {
       if (requestTimeout) clearTimeout(requestTimeout);

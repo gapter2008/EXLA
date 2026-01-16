@@ -1,6 +1,7 @@
 "use client";
 
 import { useRouter } from 'next/navigation';
+import { goOnboardingPush } from '@/lib/safeNavigate';
 import { useOnboarding } from '@/context/OnboardingContext';
 import { useState } from 'react';
 import { OnboardingPageGuard } from '@/components/OnboardingPageGuard';
@@ -25,7 +26,7 @@ export default function OnboardingConnectPage() {
   const handleSkip = async () => {
     setSkipLoading(true);
     await advanceStep('complete');
-    router.push('/onboarding/complete');
+    goOnboardingPush(router, 'complete');
   };
 
   const primaryPlatform = profile?.primary_platform?.toLowerCase() || 'tiktok';

@@ -8,3 +8,4 @@ alter table social_accounts
 -- Update comment to document scanned_partial status
 comment on column social_accounts.scan_status is 'Scan lifecycle state: connected (OAuth done, scan pending), scanning (scan in progress), scanned (scan complete with full data), scanned_partial (scan complete with partial data due to missing scopes), failed (scan failed)';
 
+ 

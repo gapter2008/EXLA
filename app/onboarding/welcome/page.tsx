@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { goOnboardingPush } from '@/lib/safeNavigate';
 import { useAuth } from '@/hooks/useAuth';
 import { useOnboarding } from '@/context/OnboardingContext';
 import { OnboardingPageGuard } from '@/components/OnboardingPageGuard';
@@ -26,7 +27,7 @@ export default function OnboardingWelcomePage() {
     }
     
     // Navigate to profile step
-    router.push('/onboarding/profile');
+    goOnboardingPush(router, 'profile');
   };
 
   return (

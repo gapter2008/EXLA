@@ -91,7 +91,7 @@ export default function OnboardingProfilePage() {
         // Small delay to ensure state is synced
         await new Promise(resolve => setTimeout(resolve, 100));
         
-        router.push('/onboarding/connect');
+        goOnboardingPush(router, 'connect');
       } catch (err: any) {
         console.error('Error saving profile:', err);
         setError(err.message || 'Failed to save profile. Please try again.');

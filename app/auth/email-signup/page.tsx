@@ -2,6 +2,7 @@
 import { supabase } from "@/lib/supabaseClient";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { goOnboarding } from "@/lib/safeNavigate";
 import { useState } from "react";
 
 // Client-side helper to get app URL
@@ -110,7 +111,7 @@ export default function EmailSignupPage() {
               await new Promise(resolve => setTimeout(resolve, 100));
               
               // Redirect to connect step (user already filled profile)
-              router.replace('/onboarding/connect');
+              goOnboarding(router, 'connect');
               // Don't call router.refresh() here - it can cause race conditions
             } catch (parseErr) {
               console.error('Error parsing onboarding data:', parseErr);
@@ -127,7 +128,7 @@ export default function EmailSignupPage() {
                 });
               // Small delay to ensure profile is saved
               await new Promise(resolve => setTimeout(resolve, 100));
-              router.replace('/onboarding/welcome');
+              goOnboarding(router, 'welcome');
             }
           } else {
             // No onboarding data, start from welcome
@@ -144,7 +145,7 @@ export default function EmailSignupPage() {
               });
             // Small delay to ensure profile is saved
             await new Promise(resolve => setTimeout(resolve, 100));
-            router.replace('/onboarding/welcome');
+            goOnboarding(router, 'welcome');
           }
         } else {
           setError("Check your email to confirm your account!");

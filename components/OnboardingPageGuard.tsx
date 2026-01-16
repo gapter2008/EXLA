@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
 import { useOnboarding } from '@/context/OnboardingContext';
+import { goOnboarding } from '@/lib/safeNavigate';
 
 export function OnboardingPageGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -55,7 +56,7 @@ export function OnboardingPageGuard({ children }: { children: React.ReactNode })
       // even if step is 'connect' (race condition)
       if (currentPathSegment !== expectedPathSegment && expectedStep !== 'welcome') {
         // Only redirect if we're sure about the step (not welcome, which is the default)
-        router.replace(`/onboarding/${expectedPathSegment}`);
+        goOnboarding(router, expectedPathSegment);
       }
     }
   }, [user, profile, authLoading, onboardingLoading, pathname, router]);

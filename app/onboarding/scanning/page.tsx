@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { goOnboarding } from "@/lib/safeNavigate";
 import { Loader2, Youtube } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
 import { useOnboarding } from "@/context/OnboardingContext";
@@ -208,10 +209,10 @@ function ScanningPageContent() {
         throw new Error(errorData.error || 'Failed to start scan');
       }
 
-      const data = await response.json();
-      if (data.scan_job_id) {
-        // Navigate to new scan job
-        router.replace(`/onboarding/scanning?job=${data.scan_job_id}`);
+          const data = await response.json();
+          if (data.scan_job_id) {
+            // Navigate to new scan job
+            goOnboarding(router, 'scanning', `job=${data.scan_job_id}`);
       } else {
         throw new Error('No scan job ID returned');
       }
