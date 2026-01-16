@@ -1464,10 +1464,9 @@ const PublicMediaKit = ({ onClose }: { onClose: () => void }) => {
       }
       
       // Update via OnboardingContext if available (for global state)
+      // Note: updateProfile already refreshes local state, so refreshProfile is unnecessary
       if (onboardingContext?.updateProfile) {
         await onboardingContext.updateProfile({ name: trimmedName });
-        // Refresh to get latest state
-        await onboardingContext.refreshProfile();
       }
       
       // Update local state immediately

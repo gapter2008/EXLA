@@ -45,7 +45,20 @@ export async function ensureProfile(user: User): Promise<Profile | null> {
   }
 
   if (existingProfile) {
-    return existingProfile as Profile;
+    // Construct Profile with all fields (missing schema fields default to null)
+    const profile: Profile = {
+      id: existingProfile.id,
+      name: existingProfile.name ?? null,
+      username: null, // Not in schema - always null
+      full_name: null, // Not in schema - always null
+      avatar_url: null, // Not in schema - always null
+      primary_platform: existingProfile.primary_platform ?? null,
+      niche: existingProfile.niche ?? null,
+      onboarding_step: existingProfile.onboarding_step ?? null,
+      onboarding_completed: existingProfile.onboarding_completed ?? null,
+      created_at: new Date().toISOString(), // Default if not in query
+    };
+    return profile;
   }
 
   // Create profile if it doesn't exist
@@ -66,7 +79,20 @@ export async function ensureProfile(user: User): Promise<Profile | null> {
     return null;
   }
 
-  return newProfile as Profile;
+  // Construct Profile with all fields (missing schema fields default to null)
+  const profile: Profile = {
+    id: newProfile.id,
+    name: newProfile.name ?? null,
+    username: null, // Not in schema - always null
+    full_name: null, // Not in schema - always null
+    avatar_url: null, // Not in schema - always null
+    primary_platform: newProfile.primary_platform ?? null,
+    niche: newProfile.niche ?? null,
+    onboarding_step: newProfile.onboarding_step ?? null,
+    onboarding_completed: newProfile.onboarding_completed ?? null,
+    created_at: new Date().toISOString(), // Default if not in query
+  };
+  return profile;
 }
 
 /**
@@ -173,10 +199,12 @@ export async function updateCreatorProfile(
 export async function getProfile(userId: string): Promise<Profile | null> {
   if (!userId) return null;
 
-  // DO NOT use select("*") - explicitly list columns (email does not exist)
+  // DO NOT use select("*") - explicitly list columns that exist
+  // Only select columns that definitely exist (name, primary_platform, niche, onboarding_step, onboarding_completed, created_at)
+  // username, full_name, avatar_url may not exist in schema - set to null in return
   const { data, error } = await supabase
     .from("profiles")
-    .select("id, name, primary_platform, niche, onboarding_step, onboarding_completed")
+    .select("id, name, primary_platform, niche, onboarding_step, onboarding_completed, created_at")
     .eq("id", userId)
     .single();
 
@@ -185,6 +213,20 @@ export async function getProfile(userId: string): Promise<Profile | null> {
     return null;
   }
 
-  return data as Profile;
+  // Construct Profile with all fields (missing schema fields default to null)
+  const profile: Profile = {
+    id: data.id,
+    name: data.name ?? null,
+    username: null, // Not in schema - always null
+    full_name: null, // Not in schema - always null
+    avatar_url: null, // Not in schema - always null
+    primary_platform: data.primary_platform ?? null,
+    niche: data.niche ?? null,
+    onboarding_step: data.onboarding_step ?? null,
+    onboarding_completed: data.onboarding_completed ?? null,
+    created_at: data.created_at ?? new Date().toISOString(),
+  };
+
+  return profile;
 }
 
