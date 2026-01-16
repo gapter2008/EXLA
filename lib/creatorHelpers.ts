@@ -12,9 +12,14 @@ export interface CreatorProfile {
 
 export interface Profile {
   id: string;
+  name: string | null; // Added: name field from profiles table
   username: string | null;
   full_name: string | null;
   avatar_url: string | null;
+  primary_platform: string | null; // Added: primary_platform field
+  niche: string | null; // Added: niche field
+  onboarding_step: string | null; // Added: onboarding_step field
+  onboarding_completed: boolean | null; // Added: onboarding_completed field
   created_at: string;
 }
 
