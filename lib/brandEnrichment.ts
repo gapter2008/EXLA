@@ -187,14 +187,12 @@ export async function getBrandContacts(brandId: string): Promise<BrandContactInf
     return null;
   }
 
-  // Map 'partial' status to 'complete' for UI (partial is still a success)
-  const status = contact.enrichment_status === 'partial' 
-    ? 'complete' 
-    : (contact.enrichment_status as 'pending' | 'complete' | 'failed');
-
+  // Contact exists, so enrichment is complete
+  // enrichment_status is not a column in brand_contacts table - it's a computed field
+  // If contact exists, enrichment was successful
   return {
     ...contact,
-    enrichment_status: status,
+    enrichment_status: 'complete' as const,
   };
 }
 
