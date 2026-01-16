@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import OpenAI from "openai";
 
 export const runtime = "nodejs";
+export const dynamic = 'force-dynamic'; // Prevent Next.js caching of user-specific data
 
 export async function POST(req: NextRequest) {
   try {
@@ -28,20 +29,38 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Database not configured" }, { status: 500 });
     }
 
-    // Fetch pitch details
-    const { data: pitch, error: pitchError } = await supabaseAdmin
+    // Fetch pitch details - include all fields that might be needed
+    const { data: pitchData, error: pitchError } = await supabaseAdmin
       .from("pitches")
-      .select("id, user_id, pitch_id, followup_type, scheduled_date, sent_at, created_at")
+      .select("id, user_id, brand_name, channel, subject, body")
       .eq("id", pitchId)
       .eq("user_id", userId)
       .single();
 
-    if (pitchError || !pitch) {
+    if (pitchError || !pitchData) {
       return NextResponse.json(
         { error: "Pitch not found" },
         { status: 404 }
       );
     }
+
+    // Type assertion to ensure TypeScript recognizes the selected fields
+    // The select statement above explicitly includes brand_name, channel, subject, body
+    type PitchFields = {
+      id: string;
+      user_id: string;
+      brand_name: string | null;
+      channel: string | null;
+      subject: string | null;
+      body: string | null;
+    };
+    const pitch = pitchData as unknown as PitchFields;
+    
+    // Safe field extraction with fallbacks
+    const brand = pitch.brand_name ?? "Brand";
+    const channel = pitch.channel ?? "email";
+    const subject = pitch.subject ?? "";
+    const body = pitch.body ?? "";
 
     // Fetch creator metrics for context
     const { data: metrics } = await supabaseAdmin
@@ -56,10 +75,10 @@ export async function POST(req: NextRequest) {
     const followUpPrompt = `Generate a friendly follow-up message for a brand pitch. 
 
 Original pitch:
-Brand: ${pitch.brand_name}
-Channel: ${pitch.channel}
-${pitch.subject ? `Subject: ${pitch.subject}` : ''}
-Body: ${pitch.body}
+Brand: ${brand}
+Channel: ${channel}
+${subject ? `Subject: ${subject}` : ''}
+Body: ${body}
 
 Creator stats:
 ${metrics ? `- Followers: ${metrics.followers?.toLocaleString() || 0}
