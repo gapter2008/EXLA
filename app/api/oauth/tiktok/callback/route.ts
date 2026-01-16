@@ -324,6 +324,15 @@ export async function GET(req: NextRequest) {
     let oauthStateRow: any = null;
     let finalCodeVerifier: string | null = null;
     
+    // HARD LOG: State lookup attempt
+    console.log(`[TikTok OAuth Callback] Request ${requestId}: Looking up oauth state in database`, {
+      statePrefix: state.substring(0, 10),
+      stateLength: state.length,
+      provider: 'tiktok',
+      userId,
+      hasSupabaseAdmin: !!supabaseAdmin,
+    });
+    
     if (supabaseAdmin) {
       try {
         const { data: dbStateRow, error: stateError } = await supabaseAdmin
@@ -333,12 +342,36 @@ export async function GET(req: NextRequest) {
           .eq('state', state)
           .maybeSingle();
         
+        // HARD LOG: State lookup result
+        console.log(`[TikTok OAuth Callback] Request ${requestId}: OAuth state lookup result`, {
+          statePrefix: state.substring(0, 10),
+          found: !!dbStateRow,
+          hasError: !!stateError,
+          errorCode: stateError?.code || null,
+          errorMessage: stateError?.message || null,
+          rowId: dbStateRow?.id || null,
+          rowUserId: dbStateRow?.user_id || null,
+          rowExpiresAt: dbStateRow?.expires_at || null,
+          hasCodeVerifier: !!dbStateRow?.code_verifier,
+          codeVerifierLength: dbStateRow?.code_verifier?.length || 0,
+        });
+        
         if (stateError) {
           console.error(`[TikTok OAuth Callback] Request ${requestId}: Error looking up oauth state:`, {
             errorCode: stateError.code,
             errorMessage: stateError.message,
+            errorDetails: stateError.details,
+            errorHint: stateError.hint,
             statePrefix: state.substring(0, 10),
           });
+          
+          await logOAuthEvent('tiktok', requestId, 'callback', 'fail', `Database error looking up state: ${stateError.message}`, userId, {
+            error_code: ERROR_CODES.STATE_MISMATCH,
+          });
+          
+          return NextResponse.redirect(
+            `${origin}/auth/tiktok/result?status=fail&reason=${ERROR_CODES.STATE_MISMATCH}&details=${encodeURIComponent(`Database error: ${stateError.message}`)}`
+          );
         } else if (dbStateRow) {
           oauthStateRow = dbStateRow;
           
@@ -352,6 +385,7 @@ export async function GET(req: NextRequest) {
               createdAt: dbStateRow.created_at,
               expiresAt: dbStateRow.expires_at,
               now: now.toISOString(),
+              expiredBy: now.getTime() - expiresAt.getTime(),
             });
             
             // Delete expired state
@@ -376,54 +410,89 @@ export async function GET(req: NextRequest) {
           // State found and valid - use stored code_verifier
           finalCodeVerifier = dbStateRow.code_verifier;
           
-          console.log(`[TikTok OAuth Callback] Request ${requestId}: OAuth state found in database`, {
+          // HARD LOG: Successful state retrieval
+          console.log(`[TikTok OAuth Callback] Request ${requestId}: ✅ OAuth state found and valid`, {
             statePrefix: state.substring(0, 10),
             found: true,
             expired: false,
             createdAt: dbStateRow.created_at,
             expiresAt: dbStateRow.expires_at,
             userId: dbStateRow.user_id,
+            codeVerifierPresent: !!finalCodeVerifier,
+            codeVerifierLength: finalCodeVerifier?.length || 0,
           });
         } else {
           // State not found in database
-          console.error(`[TikTok OAuth Callback] Request ${requestId}: OAuth state not found in database`, {
+          console.error(`[TikTok OAuth Callback] Request ${requestId}: ❌ OAuth state NOT FOUND in database`, {
             statePrefix: state.substring(0, 10),
+            stateLength: state.length,
             found: false,
             userId,
+            provider: 'tiktok',
+            troubleshooting: [
+              '1. Check if oauth_states table exists and has data',
+              '2. Verify state value matches exactly (no extra whitespace)',
+              '3. Check if state was inserted in start route',
+              '4. Verify database connection and service role key',
+            ],
           });
           
+          // Try to find any states for this user to debug
+          try {
+            const { data: userStates } = await supabaseAdmin
+              .from('oauth_states')
+              .select('id, state, provider, user_id, created_at, expires_at')
+              .eq('provider', 'tiktok')
+              .eq('user_id', userId)
+              .order('created_at', { ascending: false })
+              .limit(5);
+            
+            console.log(`[TikTok OAuth Callback] Request ${requestId}: Recent oauth_states for this user:`, {
+              count: userStates?.length || 0,
+              states: userStates?.map((s: any) => ({
+                id: s.id,
+                statePrefix: s.state?.substring(0, 10),
+                createdAt: s.created_at,
+                expiresAt: s.expires_at,
+              })) || [],
+            });
+          } catch (debugErr: any) {
+            console.warn(`[TikTok OAuth Callback] Request ${requestId}: Could not fetch debug states:`, debugErr.message);
+          }
+          
           await logOAuthEvent('tiktok', requestId, 'callback', 'fail', 'OAuth state not found in database', userId, {
-            error_code: ERROR_CODES.STATE_MISMATCH,
+            error_code: ERROR_CODES.NO_VERIFIER,
           });
           
           return NextResponse.redirect(
-            `${origin}/auth/tiktok/result?status=fail&reason=${ERROR_CODES.STATE_MISMATCH}&details=${encodeURIComponent('State not found')}`
+            `${origin}/auth/tiktok/result?status=fail&reason=${ERROR_CODES.NO_VERIFIER}&details=${encodeURIComponent('State not found in database')}`
           );
         }
       } catch (err: any) {
         console.error(`[TikTok OAuth Callback] Request ${requestId}: Exception looking up oauth state:`, {
           errorMessage: err.message,
+          errorStack: err.stack?.substring(0, 300),
           statePrefix: state.substring(0, 10),
         });
         
         await logOAuthEvent('tiktok', requestId, 'callback', 'fail', `OAuth state lookup exception: ${err.message}`, userId, {
-          error_code: ERROR_CODES.STATE_MISMATCH,
+          error_code: ERROR_CODES.NO_VERIFIER,
         });
         
         return NextResponse.redirect(
-          `${origin}/auth/tiktok/result?status=fail&reason=${ERROR_CODES.STATE_MISMATCH}&details=${encodeURIComponent(err.message || 'State lookup failed')}`
+          `${origin}/auth/tiktok/result?status=fail&reason=${ERROR_CODES.NO_VERIFIER}&details=${encodeURIComponent(err.message || 'State lookup exception')}`
         );
       }
     } else {
       // Supabase admin not configured
-      console.error(`[TikTok OAuth Callback] Request ${requestId}: Supabase admin not configured - cannot lookup oauth state`);
+      console.error(`[TikTok OAuth Callback] Request ${requestId}: ❌ Supabase admin not configured - cannot lookup oauth state`);
       
       await logOAuthEvent('tiktok', requestId, 'callback', 'fail', 'Supabase admin not configured', userId, {
-        error_code: ERROR_CODES.STATE_MISMATCH,
+        error_code: ERROR_CODES.NO_VERIFIER,
       });
       
       return NextResponse.redirect(
-        `${origin}/auth/tiktok/result?status=fail&reason=${ERROR_CODES.STATE_MISMATCH}&details=${encodeURIComponent('Database not configured')}`
+        `${origin}/auth/tiktok/result?status=fail&reason=${ERROR_CODES.NO_VERIFIER}&details=${encodeURIComponent('Database not configured')}`
       );
     }
 
@@ -892,6 +961,16 @@ try {
       const accessToken = tokenData.access_token;
       const refreshToken = tokenData.refresh_token || null;
       const expiresIn = tokenData.expires_in;
+
+      // HARD LOG: Token exchange success
+      console.log(`[TikTok OAuth Callback] Request ${requestId}: ✅ Token exchange successful`, {
+        hasAccessToken: !!accessToken,
+        accessTokenLength: accessToken?.length || 0,
+        hasRefreshToken: !!refreshToken,
+        expiresIn,
+        userId,
+        statePrefix: state.substring(0, 10),
+      });
 
       if (!accessToken) {
         console.error(`[TikTok OAuth Callback] Request ${requestId}: No access token in response`);

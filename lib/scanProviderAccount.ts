@@ -570,7 +570,15 @@ async function scanYouTube(
   userId: string,
   provider: string
 ): Promise<ScanResult> {
-  // Fetch channel info
+  // Step 1: Fetch channel info
+  logScanStep({
+    scan_run_id: scanRunId,
+    user_id: userId,
+    provider: provider as Provider,
+    step: "fetch_youtube_channel",
+    endpoint: "channels?part=snippet,statistics&mine=true",
+  });
+
   const channelResponse = await fetch(
     "https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&mine=true",
     {
@@ -581,21 +589,61 @@ async function scanYouTube(
   );
 
   if (!channelResponse.ok) {
+    const errorText = await channelResponse.text().catch(() => "");
+    logScanStep({
+      scan_run_id: scanRunId,
+      user_id: userId,
+      provider: provider as Provider,
+      step: "fetch_youtube_channel",
+      endpoint: "channels?part=snippet,statistics&mine=true",
+      http_status: channelResponse.status,
+      http_error: `YouTube API error: ${channelResponse.status}`,
+      error_code: "YT_CHANNEL_FETCH_FAILED",
+      response_body: errorText.length < 1000 ? errorText : undefined,
+    });
     throw new Error(`YouTube API error: ${channelResponse.status}`);
   }
 
   const channelData = await channelResponse.json();
   const channel = channelData.items?.[0];
   if (!channel) {
+    logScanStep({
+      scan_run_id: scanRunId,
+      user_id: userId,
+      provider: provider as Provider,
+      step: "fetch_youtube_channel",
+      endpoint: "channels?part=snippet,statistics&mine=true",
+      http_status: channelResponse.status,
+      http_error: "No channel found in response",
+      error_code: "YT_NO_CHANNEL",
+    });
     throw new Error("No YouTube channel found");
   }
 
-  // Fetch videos
+  logScanStep({
+    scan_run_id: scanRunId,
+    user_id: userId,
+    provider: provider as Provider,
+    step: "fetch_youtube_channel",
+    endpoint: "channels?part=snippet,statistics&mine=true",
+    http_status: channelResponse.status,
+    db_result: "success",
+  });
+
+  // Step 2: Fetch videos
   const uploadsPlaylistId =
     channelData.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
 
   let videos: any[] = [];
   if (uploadsPlaylistId) {
+    logScanStep({
+      scan_run_id: scanRunId,
+      user_id: userId,
+      provider: provider as Provider,
+      step: "fetch_youtube_videos",
+      endpoint: `playlistItems?playlistId=${uploadsPlaylistId}&maxResults=10`,
+    });
+
     const videosResponse = await fetch(
       `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${uploadsPlaylistId}&maxResults=10&order=date`,
       {
@@ -612,6 +660,14 @@ async function scanYouTube(
         .join(",");
 
       if (videoIds) {
+        logScanStep({
+          scan_run_id: scanRunId,
+          user_id: userId,
+          provider: provider as Provider,
+          step: "fetch_youtube_video_stats",
+          endpoint: `videos?part=statistics,snippet&id=${videoIds.substring(0, 50)}...`,
+        });
+
         const statsResponse = await fetch(
           `https://www.googleapis.com/youtube/v3/videos?part=statistics,snippet&id=${videoIds}`,
           {
@@ -624,12 +680,70 @@ async function scanYouTube(
         if (statsResponse.ok) {
           const statsData = await statsResponse.json();
           videos = statsData.items || [];
+          
+          logScanStep({
+            scan_run_id: scanRunId,
+            user_id: userId,
+            provider: provider as Provider,
+            step: "fetch_youtube_video_stats",
+            endpoint: "videos?part=statistics,snippet",
+            http_status: statsResponse.status,
+            db_result: "success",
+          });
+        } else {
+          const errorText = await statsResponse.text().catch(() => "");
+          logScanStep({
+            scan_run_id: scanRunId,
+            user_id: userId,
+            provider: provider as Provider,
+            step: "fetch_youtube_video_stats",
+            endpoint: "videos?part=statistics,snippet",
+            http_status: statsResponse.status,
+            http_error: `Failed to fetch video statistics: ${statsResponse.status}`,
+            error_code: "YT_VIDEO_STATS_FETCH_FAILED",
+            response_body: errorText.length < 1000 ? errorText : undefined,
+          });
+          // Continue without videos - non-fatal
         }
+      } else {
+        logScanStep({
+          scan_run_id: scanRunId,
+          user_id: userId,
+          provider: provider as Provider,
+          step: "fetch_youtube_videos",
+          endpoint: "playlistItems",
+          http_error: "No video IDs found in playlist response",
+          error_code: "YT_NO_VIDEO_IDS",
+        });
       }
+    } else {
+      const errorText = await videosResponse.text().catch(() => "");
+      logScanStep({
+        scan_run_id: scanRunId,
+        user_id: userId,
+        provider: provider as Provider,
+        step: "fetch_youtube_videos",
+        endpoint: "playlistItems",
+        http_status: videosResponse.status,
+        http_error: `Failed to fetch videos: ${videosResponse.status}`,
+        error_code: "YT_VIDEOS_FETCH_FAILED",
+        response_body: errorText.length < 1000 ? errorText : undefined,
+      });
+      // Continue without videos - non-fatal
     }
+  } else {
+    logScanStep({
+      scan_run_id: scanRunId,
+      user_id: userId,
+      provider: provider as Provider,
+      step: "fetch_youtube_videos",
+      endpoint: "playlistItems",
+      http_error: "No uploads playlist ID found",
+      error_code: "YT_NO_UPLOADS_PLAYLIST",
+    });
   }
 
-  // Calculate metrics
+  // Step 3: Calculate metrics
   const subscribers = parseInt(channel.statistics?.subscriberCount || "0", 10);
   const totalViews = parseInt(channel.statistics?.viewCount || "0", 10);
   const videoCount = parseInt(channel.statistics?.videoCount || "0", 10);
@@ -665,7 +779,16 @@ async function scanYouTube(
   // Sort by views
   topContent.sort((a, b) => b.views - a.views);
 
-  return {
+  // Log computed metrics
+  logScanStep({
+    scan_run_id: scanRunId,
+    user_id: userId,
+    provider: provider as Provider,
+    step: "compute_youtube_metrics",
+    db_result: "success",
+  });
+
+  const result = {
     profile: {
       handle: channel.snippet?.customUrl || channel.snippet?.title || null,
       display_name: channel.snippet?.title || null,
@@ -687,6 +810,17 @@ async function scanYouTube(
       keywords: [],
     },
   };
+
+  // Log final computed values
+  console.log(`[scanYouTube] ${scanRunId}: Computed metrics for userId=${userId}:`, {
+    followers: result.stats.followers,
+    avg_views: result.stats.avg_views,
+    engagement_rate: result.stats.engagement_rate,
+    total_videos: result.stats.total_videos,
+    top_content_count: result.top_content.length,
+  });
+
+  return result;
 }
 
 /**
