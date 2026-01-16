@@ -125,7 +125,7 @@ export async function GET(req: NextRequest) {
     // Generate PKCE parameters (required by TikTok)
     const { codeVerifier, codeChallenge } = generatePKCE();
 
-    // Generate state parameter (includes user_id and timestamp only - verifier stored in cookie)
+    // Generate state parameter (includes user_id and timestamp)
     const state = Buffer.from(
       JSON.stringify({
         userId: userId,
@@ -134,13 +134,69 @@ export async function GET(req: NextRequest) {
       })
     ).toString("base64url");
 
-    // Store code_verifier and state in httpOnly cookies (more secure than state param)
+    // Ensure redirect URI is normalized (no trailing slash, exact match required by TikTok)
+    const normalizedRedirectUri = redirectUri.replace(/\/$/, '');
+    
+    // Log the exact redirect URI being used (for debugging)
+    console.log(`[TikTok OAuth Start] Request ${requestId}: Using redirect URI: ${normalizedRedirectUri}`);
+    
+    // Store state and code_verifier in database (primary source of truth)
+    // This ensures persistence across redirects on Vercel where cookies may not work
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes from now
+    
+    try {
+      if (supabaseAdmin) {
+        // Clean up old oauth_states for this user/provider to prevent stale states
+        try {
+          await supabaseAdmin
+            .from('oauth_states')
+            .delete()
+            .eq('provider', 'tiktok')
+            .eq('user_id', userId);
+        } catch (cleanupErr: any) {
+          // Log but don't fail - cleanup is best effort
+          console.warn(`[TikTok OAuth Start] Request ${requestId}: Could not cleanup old states: ${cleanupErr.message}`);
+        }
+        
+        // Insert new oauth state
+        const { error: stateError } = await supabaseAdmin
+          .from('oauth_states')
+          .insert({
+            provider: 'tiktok',
+            state: state,
+            code_verifier: codeVerifier,
+            user_id: userId,
+            expires_at: expiresAt.toISOString(),
+          });
+        
+        if (stateError) {
+          console.error(`[TikTok OAuth Start] Request ${requestId}: Failed to store oauth state in database:`, {
+            errorCode: stateError.code,
+            errorMessage: stateError.message,
+            userId,
+          });
+          // Don't fail the flow - try to continue with cookies as fallback
+        } else {
+          console.log(`[TikTok OAuth Start] Request ${requestId}: OAuth state stored in database`, {
+            statePrefix: state.substring(0, 10),
+            createdAt: new Date().toISOString(),
+            expiresAt: expiresAt.toISOString(),
+            userId,
+          });
+        }
+      }
+    } catch (err: any) {
+      // Log but don't fail - cookies will be used as fallback
+      console.warn(`[TikTok OAuth Start] Request ${requestId}: Exception storing oauth state: ${err.message}`);
+    }
+    
+    // Create redirect response
     const response = NextResponse.redirect(new URL(
       `https://www.tiktok.com/v2/auth/authorize/?${new URLSearchParams({
         client_key: clientKey,
-        redirect_uri: redirectUri,
+        redirect_uri: normalizedRedirectUri, // Must match exactly what's in TikTok Developer Portal
         response_type: "code",
-        scope: "user.info.basic,user.info.stats,video.list", // Request stats and video scopes for personalization
+        scope: "user.info.profile,user.info.stats,video.list", // Request profile, stats, and video scopes for personalization
         state: state,
         code_challenge: codeChallenge,
         code_challenge_method: "S256",
@@ -148,22 +204,29 @@ export async function GET(req: NextRequest) {
       req.url
     ));
 
-    // Set httpOnly cookies for PKCE verifier and state (30 min expiry)
+    // Set lightweight cookie for correlation (optional, not source of truth)
+    // This helps with debugging but DB is the primary source
     const cookieOptions = {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax' as const,
-      maxAge: 30 * 60, // 30 minutes
+      maxAge: 10 * 60, // 10 minutes
       path: '/',
     };
 
-    response.cookies.set('tiktok_code_verifier', codeVerifier, cookieOptions);
-    response.cookies.set('tiktok_state', state, cookieOptions);
-    response.cookies.set('tiktok_request_id', requestId, cookieOptions);
+    // Set lightweight state cookie for correlation only
+    response.cookies.set('tiktok_oauth_state', state, cookieOptions);
+    
+    // Log that state is stored (prefix only, no secret values)
+    console.log(`[TikTok OAuth Start] Request ${requestId}: OAuth state prepared`, {
+      statePrefix: state.substring(0, 10),
+      verifierLength: codeVerifier.length,
+      userId,
+    });
 
     // Log success
     await logOAuthEvent('tiktok', requestId, 'start', 'ok', 'OAuth flow started', userId, {
-      redirect_uri: redirectUri,
+      redirect_uri: normalizedRedirectUri,
       state_prefix: state.substring(0, 6),
       has_code: false,
       has_state: true,

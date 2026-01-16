@@ -280,6 +280,21 @@ html {
 .phone-frame * {
   max-width: 100%;
   word-wrap: break-word;
+  word-break: normal; /* Override any break-all */
+}
+
+/* Global word wrapping fixes - prevent mid-word breaks */
+* {
+  word-break: normal;
+  overflow-wrap: break-word;
+  hyphens: none;
+}
+
+/* Utility class for label text - prevent awkward wrapping */
+.label-text {
+  white-space: normal;
+  word-break: keep-all;
+  overflow-wrap: normal;
 }
 
 /* Ensure inputs and forms fit */

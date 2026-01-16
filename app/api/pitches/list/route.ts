@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
 
     const { data: pitches, error } = await supabaseAdmin
       .from("pitches")
-      .select("*")
+      .select("id, user_id, brand_id, status, channel, deliverable, deal_type, generated_pitch, created_at, updated_at")
       .eq("user_id", userId)
       .order("updated_at", { ascending: false });
 

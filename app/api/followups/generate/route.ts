@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
     // Fetch pitch details
     const { data: pitch, error: pitchError } = await supabaseAdmin
       .from("pitches")
-      .select("*")
+      .select("id, user_id, pitch_id, followup_type, scheduled_date, sent_at, created_at")
       .eq("id", pitchId)
       .eq("user_id", userId)
       .single();

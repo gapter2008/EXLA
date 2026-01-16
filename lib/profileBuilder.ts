@@ -370,24 +370,81 @@ export async function buildCreatorProfile(userId: string) {
     console.log(`[profileBuilder] Niche already set: "${existingNiche}", no update needed`);
   }
 
-  // Upsert creator profile
-  const { error: profileError } = await supabaseAdmin
-    .from("creator_profiles")
-    .upsert(
-      {
-        user_id: userId,
+  // Upsert creator profile (non-blocking - if this fails, scan can still complete)
+  try {
+    const { error: profileError } = await supabaseAdmin
+      .from("creator_profiles")
+      .upsert(
+        {
+          user_id: userId,
+          size_tier: sizeTier,
+          primary_topics: profileData.primary_topics,
+          keywords: profileData.keywords,
+          summary: profileData.summary,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "user_id" }
+      );
+
+    if (profileError) {
+      console.error("[profileBuilder] Error upserting creator profile:", {
+        code: profileError.code,
+        message: profileError.message,
+        details: profileError.details,
+        hint: profileError.hint,
+        userId,
+      });
+      
+      // Check if table doesn't exist
+      if (profileError.message?.includes("relation") || profileError.message?.includes("does not exist")) {
+        console.error("[profileBuilder] CRITICAL: The 'creator_profiles' table does not exist! Please run migration: supabase/migrations/0006_creator_profiles.sql");
+        // Don't throw - this is non-critical for scan completion
+        return {
+          size_tier: sizeTier,
+          primary_topics: profileData.primary_topics,
+          keywords: profileData.keywords,
+          summary: profileData.summary,
+          niche: inferredNiche,
+          warning: "Creator profiles table not found",
+        };
+      }
+      
+      // Check if it's a column mismatch
+      if (profileError.message?.includes("column") || profileError.message?.includes("Could not find")) {
+        console.error("[profileBuilder] CRITICAL: Schema mismatch in creator_profiles table. Error:", profileError.message);
+        // Don't throw - this is non-critical for scan completion
+        return {
+          size_tier: sizeTier,
+          primary_topics: profileData.primary_topics,
+          keywords: profileData.keywords,
+          summary: profileData.summary,
+          niche: inferredNiche,
+          warning: `Schema error: ${profileError.message}`,
+        };
+      }
+      
+      // For other errors, log but don't throw - scan can still complete
+      console.warn("[profileBuilder] Failed to save creator profile (non-blocking):", profileError.message);
+      return {
         size_tier: sizeTier,
         primary_topics: profileData.primary_topics,
         keywords: profileData.keywords,
         summary: profileData.summary,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "user_id" }
-    );
-
-  if (profileError) {
-    console.error("Error upserting creator profile:", profileError);
-    throw new Error("Failed to save creator profile");
+        niche: inferredNiche,
+        warning: `Failed to save: ${profileError.message || 'Unknown error'}`,
+      };
+    }
+  } catch (err: any) {
+    // Catch any unexpected errors and log them, but don't fail the scan
+    console.error("[profileBuilder] Unexpected error saving creator profile (non-blocking):", err);
+    return {
+      size_tier: sizeTier,
+      primary_topics: profileData.primary_topics,
+      keywords: profileData.keywords,
+      summary: profileData.summary,
+      niche: inferredNiche,
+      warning: `Unexpected error: ${err.message || 'Unknown error'}`,
+    };
   }
 
   return {

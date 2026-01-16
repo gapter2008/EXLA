@@ -157,7 +157,7 @@ export async function getBrandContacts(brandId: string): Promise<BrandContactInf
   // Get contact info
   const { data: contact, error } = await supabaseAdmin
     .from('brand_contacts')
-    .select('*')
+    .select('id, brand_id, contact_name, contact_email, contact_phone, contact_role, created_at, updated_at')
     .eq('brand_id', brandId)
     .single();
 

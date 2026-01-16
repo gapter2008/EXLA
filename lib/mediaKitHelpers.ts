@@ -30,7 +30,7 @@ async function generateMediaKit(userId: string, profileName?: string): Promise<M
   // Fetch all creator metrics for this user
   const { data: metrics, error: metricsError } = await supabaseAdmin
     .from("creator_metrics")
-    .select("*")
+    .select("id, user_id, platform, followers, total_views, video_count, avg_views_10, engagement_rate_10, top_videos, updated_at")
     .eq("user_id", userId);
 
   // Fetch creator profile for niche
@@ -40,17 +40,19 @@ async function generateMediaKit(userId: string, profileName?: string): Promise<M
     .eq("user_id", userId)
     .single();
 
-  // Fetch profile for name/username
+  // Fetch profile for name
+  // DO NOT select full_name or username - columns may not exist
+  // Use 'name' field which exists in profiles table
   const { data: profile } = await supabaseAdmin
     .from("profiles")
-    .select("full_name, username")
+    .select("name")
     .eq("id", userId)
-    .single();
+    .maybeSingle();
 
   if (metricsError || !metrics || metrics.length === 0) {
     // Return minimal kit if no metrics
     return {
-      name: profileName || profile?.full_name || profile?.username || "Creator",
+      name: profileName || profile?.name || "Creator",
       niche: creator?.niche,
       platforms: [],
       top_content: [],
@@ -113,8 +115,9 @@ async function generateMediaKit(userId: string, profileName?: string): Promise<M
   const minRate = Math.max(50, Math.floor(baseRate * engagementMultiplier * 0.7));
   const maxRate = Math.floor(baseRate * engagementMultiplier * 1.5);
 
-  // Use profile name, YouTube channel title, or username as fallback
-  const name = profileName || profile?.full_name || youtubeHandle || profile?.username || "Creator";
+  // Use profile name or YouTube channel title as fallback
+  // DO NOT use full_name or username - columns do not exist in profiles table
+  const name = profileName || profile?.name || youtubeHandle || "Creator";
 
   return {
     name,

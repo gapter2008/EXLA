@@ -168,7 +168,7 @@ export async function POST(req: NextRequest) {
     // Get social account with tokens
     const { data: socialAccount, error: accountError } = await supabaseAdmin
       .from("social_accounts")
-      .select("*")
+      .select("id, user_id, platform, platform_user_id, handle, access_token, refresh_token, expires_at, created_at, scan_status")
       .eq("user_id", userId)
       .eq("platform", platform)
       .single();
@@ -290,11 +290,11 @@ export async function POST(req: NextRequest) {
 
         const { data: profile } = await supabaseAdmin
           .from("profiles")
-          .select("full_name, username")
+          .select("name")
           .eq("id", userId)
-          .single();
+          .maybeSingle();
 
-        const profileName = profile?.full_name || profile?.username || undefined;
+        const profileName = profile?.name || undefined;
         await generateAndStoreMediaKit(userId, profileName);
 
         // Complete

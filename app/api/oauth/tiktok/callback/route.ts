@@ -508,10 +508,11 @@ export async function GET(req: NextRequest) {
 
     // Ensure profile exists (profiles table must have a row for foreign key constraint)
     // Use maybeSingle() to avoid errors when no row exists
+    // DO NOT select email - column does not exist in profiles table
     console.log(`[TikTok OAuth Callback] Request ${requestId}: Checking profile for user ${userId}`);
     const { data: existingProfile, error: profileCheckError } = await supabaseAdmin
       .from("profiles")
-      .select("id, email, role")
+      .select("id")
       .eq("id", userId)
       .maybeSingle();
     
@@ -526,14 +527,13 @@ export async function GET(req: NextRequest) {
     
     if (!existingProfile) {
       // Profile doesn't exist - create it
-      // Use a unique email based on userId to avoid conflicts
+      // DO NOT include email - column does not exist in profiles table
       console.log(`[TikTok OAuth Callback] Request ${requestId}: Profile not found, creating profile for user ${userId}`);
       
       try {
+        // DO NOT include role - column may not exist in profiles table
         const profileData = {
           id: userId,
-          email: `user_${userId.replace(/-/g, '')}@oauth.exla.dev`, // Unique email based on userId
-          role: "creator" as const,
         };
         
         const { data: createdProfile, error: createError } = await supabaseAdmin
@@ -543,61 +543,22 @@ export async function GET(req: NextRequest) {
           .single();
         
         if (createError) {
-          // If creation fails due to email conflict, try with timestamp
-          if (createError.code === '23505' || createError.message?.includes('unique') || createError.message?.includes('duplicate')) {
-            console.warn(`[TikTok OAuth Callback] Request ${requestId}: Profile creation failed (email conflict), trying with timestamp:`, {
-              errorCode: createError.code,
-              errorMessage: createError.message,
-            });
-            
-            const retryProfileData = {
-              id: userId,
-              email: `user_${userId.replace(/-/g, '')}_${Date.now()}@oauth.exla.dev`,
-              role: "creator" as const,
-            };
-            
-            const { data: retryProfile, error: retryError } = await supabaseAdmin
-              .from("profiles")
-              .insert(retryProfileData)
-              .select("id")
-              .single();
-            
-            if (retryError) {
-              console.error(`[TikTok OAuth Callback] Request ${requestId}: Profile creation failed after retry:`, {
-                errorCode: retryError.code,
-                errorMessage: retryError.message,
-                errorDetails: retryError.details,
-                userId,
-              });
-              
-              await logOAuthEvent('tiktok', requestId, 'callback', 'fail', `Profile creation failed: ${retryError.message}`, userId, {
-                error_code: ERROR_CODES.PROFILE_CHECK_FAILED,
-              });
-              
-              return NextResponse.redirect(
-                `${origin}/auth/tiktok/result?status=fail&reason=${ERROR_CODES.PROFILE_CHECK_FAILED}&details=${encodeURIComponent(retryError.message || 'Profile creation failed')}`
-              );
-            } else {
-              console.log(`[TikTok OAuth Callback] Request ${requestId}: Created profile for user ${userId} (with timestamp)`);
-            }
-          } else {
-            // Other error (e.g., foreign key constraint, missing column, etc.)
-            console.error(`[TikTok OAuth Callback] Request ${requestId}: Profile creation failed:`, {
-              errorCode: createError.code,
-              errorMessage: createError.message,
-              errorDetails: createError.details,
-              errorHint: createError.hint,
-              userId,
-            });
-            
-            await logOAuthEvent('tiktok', requestId, 'callback', 'fail', `Profile creation failed: ${createError.message}`, userId, {
-              error_code: ERROR_CODES.PROFILE_CHECK_FAILED,
-            });
-            
-            return NextResponse.redirect(
-              `${origin}/auth/tiktok/result?status=fail&reason=${ERROR_CODES.PROFILE_CHECK_FAILED}&details=${encodeURIComponent(createError.message || 'Profile creation failed')}`
-            );
-          }
+          // Profile creation failed
+          console.error(`[TikTok OAuth Callback] Request ${requestId}: Profile creation failed:`, {
+            errorCode: createError.code,
+            errorMessage: createError.message,
+            errorDetails: createError.details,
+            errorHint: createError.hint,
+            userId,
+          });
+          
+          await logOAuthEvent('tiktok', requestId, 'callback', 'fail', `Profile creation failed: ${createError.message}`, userId, {
+            error_code: ERROR_CODES.PROFILE_CHECK_FAILED,
+          });
+          
+          return NextResponse.redirect(
+            `${origin}/auth/tiktok/result?status=fail&reason=${ERROR_CODES.PROFILE_CHECK_FAILED}&details=${encodeURIComponent(createError.message || 'Profile creation failed')}`
+          );
         } else {
           console.log(`[TikTok OAuth Callback] Request ${requestId}: Created profile for user ${userId}`, {
             profileId: createdProfile?.id,
@@ -644,8 +605,6 @@ export async function GET(req: NextRequest) {
       // Profile exists - log success
       console.log(`[TikTok OAuth Callback] Request ${requestId}: Profile exists for user ${userId}`, {
         profileId: existingProfile.id,
-        hasEmail: !!existingProfile.email,
-        role: existingProfile.role,
       });
     }
     
@@ -657,9 +616,7 @@ try {
     .upsert(
       {
         id: userId,
-        role: "creator",
-        // optional: only include email if your schema requires it
-        email: `user_${userId.replace(/-/g, '')}@oauth.exla.dev`,
+        // DO NOT include email or role - columns may not exist in profiles table
       },
       { onConflict: "id" }
     );
@@ -1153,11 +1110,11 @@ try {
         // Fetch profile name for headline
         const { data: profile } = await supabaseAdmin
           .from("profiles")
-          .select("full_name, username")
+          .select("name")
           .eq("id", userId)
           .single();
         
-        const profileName = profile?.full_name || profile?.username || undefined;
+        const profileName = profile?.name || undefined;
         await generateAndStoreMediaKit(userId, profileName);
         console.log(`[TikTok OAuth Callback] Request ${requestId}: Media kit generated`);
       } catch (kitErr: any) {

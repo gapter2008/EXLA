@@ -400,6 +400,60 @@ export async function GET(req: NextRequest) {
 
     const platformUserId = channel.id;
 
+    // HARD GUARANTEE: ensure profiles row exists before social_accounts insert (FK requirement)
+    try {
+      // Check if profile exists first
+      const { data: existingProfile } = await supabaseAdmin
+        .from("profiles")
+        .select("id")
+        .eq("id", userId)
+        .maybeSingle();
+
+      // Profile data - DO NOT include email or role (columns may not exist in schema)
+      const profileData = {
+        id: userId,
+      };
+
+      // Only upsert if profile doesn't exist (if exists, no need to update)
+      if (!existingProfile) {
+        const { error: ensureProfileErr } = await supabaseAdmin
+          .from("profiles")
+          .upsert(profileData, { onConflict: "id" });
+
+        if (ensureProfileErr) {
+          console.error("❌ Failed to upsert profile before social_accounts insert:", {
+            code: ensureProfileErr.code,
+            message: ensureProfileErr.message,
+            details: ensureProfileErr.details,
+          });
+
+          await updateScanJob(scanJob.id, {
+            status: "failed",
+            error: `Profile creation failed: ${ensureProfileErr.message || "Database error"}`,
+          });
+          
+          return NextResponse.redirect(
+            `${origin}/onboarding/scanning?job=${scanJob.id}&error=${encodeURIComponent(ensureProfileErr.message || "Profile creation failed")}`
+          );
+        }
+        
+        console.log("✅ Profile created before social_accounts insert");
+      } else {
+        console.log("✅ Profile already exists");
+      }
+      
+      console.log("✅ Profile ensured before social_accounts insert");
+    } catch (e: any) {
+      console.error("❌ Exception during profile upsert before social_accounts insert:", e?.message);
+      await updateScanJob(scanJob.id, {
+        status: "failed",
+        error: `Profile creation exception: ${e?.message || "Unknown error"}`,
+      });
+      return NextResponse.redirect(
+        `${origin}/onboarding/scanning?job=${scanJob.id}&error=${encodeURIComponent(e?.message || "Profile creation exception")}`
+      );
+    }
+
     // Store social account with tokens and scan_status='connected'
     try {
       console.log("💾 Storing social account with tokens...");
@@ -457,13 +511,15 @@ export async function GET(req: NextRequest) {
       await updateScanJob(scanJob.id, { progress: 90 });
       
       // Fetch profile name for headline
+      // DO NOT select full_name or username - columns may not exist
+      // Use 'name' field which exists in profiles table
       const { data: profile } = await supabaseAdmin
         .from("profiles")
-        .select("full_name, username")
+        .select("name")
         .eq("id", userId)
-        .single();
+        .maybeSingle();
       
-      const profileName = profile?.full_name || profile?.username || undefined;
+      const profileName = profile?.name || undefined;
       await generateAndStoreMediaKit(userId, profileName);
       console.log("✅ Media kit generated");
     } catch (kitErr) {

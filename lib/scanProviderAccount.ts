@@ -361,9 +361,17 @@ export async function scanProviderAccount(
       step: "write_db",
     });
 
+    // Determine final scan status (scanned vs scanned_partial)
+    // Check if stats are missing (indicates partial scan due to missing scopes)
+    const hasStats = scanData.stats.followers !== null || 
+                     scanData.stats.total_videos !== null || 
+                     scanData.stats.likes !== null;
+    const hasVideos = scanData.top_content.length > 0;
+    const scanStatus = (!hasStats || !hasVideos) ? "scanned_partial" : "scanned";
+
     // Build update object - only include columns that exist
     const updateData: any = {
-      scan_status: "scanned",
+      scan_status: scanStatus,
       scanned_at: new Date().toISOString(),
       scan_version: newVersion,
       handle: scanData.profile.handle,
@@ -404,7 +412,7 @@ export async function scanProviderAccount(
         const { error: retryError } = await supabaseAdmin
           .from("social_accounts")
           .update({
-            scan_status: "scanned",
+            scan_status: scanStatus,
             scanned_at: new Date().toISOString(),
             scan_version: newVersion,
             handle: scanData.profile.handle,
@@ -522,8 +530,9 @@ export async function scanProviderAccount(
       db_result: "success",
     });
 
+    const statusLabel = scanStatus === "scanned_partial" ? "✅ (partial)" : "✅";
     console.log(
-      `[scanProviderAccount] ✅ Scan complete for userId=${userId}, provider=${provider}, version=${newVersion}, niche=${scanData.niche.primary}`
+      `[scanProviderAccount] ${statusLabel} Scan complete for userId=${userId}, provider=${provider}, version=${newVersion}, niche=${scanData.niche.primary}`
     );
 
     return scanData;
@@ -710,6 +719,22 @@ async function scanTikTok(
   );
 
   if (!userResponse.ok) {
+    // Log response body for debugging (TikTok error JSON is safe to log)
+    let errorBody = "";
+    try {
+      const errorText = await userResponse.text();
+      if (errorText && errorText.length < 1000) {
+        errorBody = errorText;
+        try {
+          JSON.parse(errorText); // Validate it's JSON
+        } catch {
+          errorBody = ""; // Not JSON, don't log
+        }
+      }
+    } catch {
+      // Ignore error body parsing failures
+    }
+
     // Try with just basic fields (stats scope may not be available)
     logScanStep({
       scan_run_id: scanRunId,
@@ -724,6 +749,7 @@ async function scanTikTok(
       error_code: userResponse.status === 401 || userResponse.status === 403 
         ? "TT_MISSING_SCOPE" 
         : "API_ERROR",
+      response_body: errorBody || undefined,
     });
 
     const basicResponse = await fetch(
@@ -736,6 +762,35 @@ async function scanTikTok(
     );
 
     if (!basicResponse.ok) {
+      // Log response body for debugging
+      let basicErrorBody = "";
+      try {
+        const errorText = await basicResponse.text();
+        if (errorText && errorText.length < 1000) {
+          basicErrorBody = errorText;
+          try {
+            JSON.parse(errorText);
+          } catch {
+            basicErrorBody = "";
+          }
+        }
+      } catch {
+        // Ignore
+      }
+
+      logScanStep({
+        scan_run_id: scanRunId,
+        user_id: userId,
+        provider: provider as Provider,
+        step: "fetch_profile",
+        endpoint: "/v2/user/info/ (basic fallback)",
+        http_status: basicResponse.status,
+        http_error: `Failed to fetch basic profile: HTTP ${basicResponse.status}`,
+        error_code: basicResponse.status === 401 || basicResponse.status === 403 ? "TT_MISSING_SCOPE" : "API_ERROR",
+        response_body: basicErrorBody || undefined,
+      });
+
+      // This is fatal - cannot proceed without basic profile
       const error: any = new Error(`TikTok API error: ${basicResponse.status}${basicResponse.status === 401 || basicResponse.status === 403 ? " (missing scope or invalid token)" : ""}`);
       error.status = basicResponse.status;
       error.code = basicResponse.status === 401 || basicResponse.status === 403 ? "TT_MISSING_SCOPE" : "API_ERROR";
@@ -745,23 +800,37 @@ async function scanTikTok(
     const userData = await basicResponse.json();
     const user = userData.data?.user;
 
+    if (!user) {
+      logScanStep({
+        scan_run_id: scanRunId,
+        user_id: userId,
+        provider: provider as Provider,
+        step: "fetch_profile",
+        endpoint: "/v2/user/info/ (basic fallback)",
+        http_status: basicResponse.status,
+        http_error: "No user data in response",
+        error_code: "API_ERROR",
+      });
+      throw new Error("No user data in TikTok response");
+    }
+
     logScanStep({
       scan_run_id: scanRunId,
       user_id: userId,
       provider: provider as Provider,
       step: "fetch_profile",
-      endpoint: "/v2/user/info/",
+      endpoint: "/v2/user/info/ (basic fallback)",
       http_status: basicResponse.status,
       db_result: "success",
     });
 
-    // Return partial data (profile only, no stats)
+    // Return partial data (profile only, no stats) - mark as partial
     return {
       profile: {
         handle: user?.username || null,
         display_name: user?.display_name || null,
         avatar_url: user?.avatar_url || null,
-        bio: null,
+        bio: null, // Bio requires stats scope
       },
       stats: {
         followers: null,
@@ -831,6 +900,22 @@ async function scanTikTok(
         db_result: "success",
       });
     } else {
+      // Log response body for debugging (safe to log TikTok error JSON)
+      let videoErrorBody = "";
+      try {
+        const errorText = await videosResponse.text();
+        if (errorText && errorText.length < 1000) {
+          videoErrorBody = errorText;
+          try {
+            JSON.parse(errorText);
+          } catch {
+            videoErrorBody = "";
+          }
+        }
+      } catch {
+        // Ignore
+      }
+
       logScanStep({
         scan_run_id: scanRunId,
         user_id: userId,
@@ -844,7 +929,9 @@ async function scanTikTok(
         error_code: videosResponse.status === 401 || videosResponse.status === 403 
           ? "TT_MISSING_SCOPE" 
           : "API_ERROR",
+        response_body: videoErrorBody || undefined,
       });
+      // Continue without videos - non-fatal
     }
   } catch (e: any) {
     // Scope not available, continue without videos (non-blocking)
@@ -869,6 +956,14 @@ async function scanTikTok(
   const followerCount = userData.data?.user?.follower_count || null;
   const videoCount = userData.data?.user?.video_count || null;
   const likesCount = userData.data?.user?.likes_count || null;
+
+  logScanStep({
+    scan_run_id: scanRunId,
+    user_id: userId,
+    provider: provider as Provider,
+    step: "compute_metrics",
+    db_result: "success",
+  });
 
   return {
     profile: {

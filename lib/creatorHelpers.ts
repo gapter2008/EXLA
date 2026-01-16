@@ -26,9 +26,10 @@ export async function ensureProfile(user: User): Promise<Profile | null> {
   if (!user?.id) return null;
 
   // Check if profile exists
+  // DO NOT use select("*") - explicitly list columns (email does not exist)
   const { data: existingProfile, error: fetchError } = await supabase
     .from("profiles")
-    .select("*")
+    .select("id, name, primary_platform, niche, onboarding_step, onboarding_completed")
     .eq("id", user.id)
     .single();
 
@@ -43,15 +44,16 @@ export async function ensureProfile(user: User): Promise<Profile | null> {
   }
 
   // Create profile if it doesn't exist
+  // DO NOT include email, role, username, full_name, avatar_url - columns may not exist
+  // Only include fields that definitely exist in profiles table
   const { data: newProfile, error: createError } = await supabase
     .from("profiles")
     .insert({
       id: user.id,
-      username: user.email?.split("@")[0] || null,
-      full_name: user.user_metadata?.full_name || user.user_metadata?.name || null,
-      avatar_url: user.user_metadata?.avatar_url || null,
+      onboarding_step: 'welcome',
+      onboarding_completed: false,
     })
-    .select()
+    .select("id, name, primary_platform, niche, onboarding_step, onboarding_completed")
     .single();
 
   if (createError) {
@@ -72,7 +74,7 @@ export async function getCreatorProfile(
 
   const { data, error } = await supabase
     .from("creators")
-    .select("*")
+    .select("id, user_id, niche, created_at, updated_at")
     .eq("user_id", userId)
     .single();
 
@@ -166,9 +168,10 @@ export async function updateCreatorProfile(
 export async function getProfile(userId: string): Promise<Profile | null> {
   if (!userId) return null;
 
+  // DO NOT use select("*") - explicitly list columns (email does not exist)
   const { data, error } = await supabase
     .from("profiles")
-    .select("*")
+    .select("id, name, primary_platform, niche, onboarding_step, onboarding_completed")
     .eq("id", userId)
     .single();
 

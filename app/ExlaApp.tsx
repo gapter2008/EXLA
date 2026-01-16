@@ -2,10 +2,16 @@
 
 import React, { useState, useEffect, useRef, createContext, useContext, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Home, Search, MessageSquare, FileText, User, ChevronRight, Check, Loader2, Instagram, Youtube, X, Sparkles, TrendingUp, Zap, Clock, Target, Award, Bell, Copy, CheckCircle2, Eye, MessageCircle, DollarSign, ArrowRight, ChevronDown, Trash2, Send, Settings, Moon, Sun, Monitor, ChevronLeft, Mail, ExternalLink, Linkedin } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { Home, Search, MessageSquare, FileText, User, Users, ChevronRight, Check, Loader2, Instagram, Youtube, X, Sparkles, TrendingUp, Zap, Clock, Target, Award, Bell, Copy, CheckCircle2, Eye, MessageCircle, DollarSign, ArrowRight, ChevronDown, Trash2, Send, Settings, Moon, Sun, Monitor, ChevronLeft, Mail, ExternalLink, Linkedin, Edit2 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { ensureProfile, getProfile, getCreatorProfile, createCreatorProfile } from '../lib/creatorHelpers';
 import type { Profile, CreatorProfile } from '../lib/creatorHelpers';
+import { inferNiche } from '../lib/inferNiche';
+import { useOnboarding } from '../context/OnboardingContext';
+import { getMediaKitData, type MediaKitData } from '../lib/getMediaKitData';
+import { StickyFooterCTA } from '../components/StickyFooterCTA';
+import { PageContainer } from '../components/PageContainer';
 
 // Global User Data Store Context
 interface UserDataStore {
@@ -203,7 +209,7 @@ const UserDataProvider = ({ children, userId }: { children: React.ReactNode; use
         
         supabase
           .from('brand_recommendations')
-          .select('*, user_id')
+          .select('id, user_id, brand_id, status, channel, deliverable, deal_type, generated_pitch, created_at, updated_at')
           .eq('user_id', userId)
           .order('created_at', { ascending: false }),
         
@@ -289,7 +295,7 @@ const UserDataProvider = ({ children, userId }: { children: React.ReactNode; use
     const { supabase } = await import('../lib/supabaseClient');
     const { data } = await supabase
       .from('brand_recommendations')
-      .select('*, user_id')
+          .select('id, user_id, brand_id, status, channel, deliverable, deal_type, generated_pitch, created_at, updated_at')
       .eq('user_id', userId)
       .order('created_at', { ascending: false });
     
@@ -1219,12 +1225,24 @@ const NotificationsScreen = ({ onClose }: { onClose: () => void }) => {
 // Public Media Kit Screen
 const PublicMediaKit = ({ onClose }: { onClose: () => void }) => {
   const { user, loading: authLoading } = useAuth();
+  let onboardingContext: { updateProfile?: (partial: any) => Promise<void> } | null = null;
+  try {
+    onboardingContext = useOnboarding();
+  } catch {
+    // OnboardingContext not available, will use direct Supabase
+  }
+  const [kitData, setKitData] = useState<MediaKitData | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [creator, setCreator] = useState<CreatorProfile | null>(null);
-  const [mediaKit, setMediaKit] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
-  const [generating, setGenerating] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [nameValue, setNameValue] = useState('');
+  const [savingName, setSavingName] = useState(false);
+  const [inferredNiche, setInferredNiche] = useState<string | null>(null);
+  const [diagnostics, setDiagnostics] = useState<any>(null);
+  const [scanJobError, setScanJobError] = useState<string | null>(null);
 
   useEffect(() => {
     if (authLoading) return;
@@ -1235,108 +1253,241 @@ const PublicMediaKit = ({ onClose }: { onClose: () => void }) => {
     }
 
     const fetchData = async () => {
-      const userProfile = await getProfile(user.id);
-      let creatorProfile = await getCreatorProfile(user.id);
-      setProfile(userProfile);
-      setCreator(creatorProfile);
-      
-      // If niche is missing, trigger profile rebuild to generate it
-      if (!creatorProfile?.niche) {
-        console.log('[PublicMediaKit] Niche missing, triggering profile rebuild...');
-        try {
-          const rebuildResponse = await fetch('/api/profile/build', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userId: user.id }),
-          });
-          
-          if (!rebuildResponse.ok) {
-            const errorData = await rebuildResponse.json().catch(() => ({ error: 'Unknown error' }));
-            console.error('[PublicMediaKit] Profile rebuild failed:', errorData);
-          } else {
-            const rebuildData = await rebuildResponse.json();
-            console.log('[PublicMediaKit] Profile rebuild response:', rebuildData);
-            
-            // Wait a moment for DB to update, then reload creator profile
-            await new Promise(resolve => setTimeout(resolve, 500));
-            creatorProfile = await getCreatorProfile(user.id);
-            if (creatorProfile) {
-              setCreator(creatorProfile);
-              console.log('[PublicMediaKit] ✅ Profile rebuilt, niche:', creatorProfile.niche);
-            } else {
-              console.warn('[PublicMediaKit] Profile rebuilt but creatorProfile is still null');
-            }
-          }
-        } catch (err: any) {
-          console.error('[PublicMediaKit] Failed to rebuild profile:', err.message || err);
-        }
-      }
-
-      // Fetch media kit from database
       try {
-        const { supabase } = await import('../lib/supabaseClient');
-        const { data, error } = await supabase
-          .from('media_kits')
-          .select('kit, updated_at')
-          .eq('user_id', user.id)
-          .single();
+        // Use unified data fetcher
+        const data = await getMediaKitData(user.id);
+        setKitData(data);
 
-        if (!error && data) {
-          setMediaKit(data.kit);
+        // Also fetch profile and creator for compatibility
+        const userProfile = await getProfile(user.id);
+        let creatorProfile = await getCreatorProfile(user.id);
+        setProfile(userProfile);
+        setCreator(creatorProfile);
+
+        // Fetch diagnostics in dev mode or with ?debug=1
+        const isDev = process.env.NODE_ENV === 'development';
+        const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+        const showDebug = isDev || urlParams?.get('debug') === '1';
+        
+        if (showDebug && typeof window !== 'undefined') {
+          const { supabase } = await import('../lib/supabaseClient');
+          
+          // Check profile exists
+          const { data: profileCheck } = await supabase
+            .from('profiles')
+            .select('id')
+            .eq('id', user.id)
+            .maybeSingle();
+          
+          // Get latest scan job
+          const { data: latestJob } = await supabase
+            .from('scan_jobs')
+            .select('id, status, progress, error, created_at')
+            .eq('user_id', user.id)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          
+          // Count social accounts
+          const { data: accounts, count: accountsCount } = await supabase
+            .from('social_accounts')
+            .select('platform, handle, scan_status', { count: 'exact' })
+            .eq('user_id', user.id);
+          
+          // Count creator metrics
+          const { data: metrics, count: metricsCount } = await supabase
+            .from('creator_metrics')
+            .select('platform', { count: 'exact' })
+            .eq('user_id', user.id);
+          
+          setDiagnostics({
+            authUserId: user.id,
+            profileExists: !!profileCheck,
+            profileId: profileCheck?.id || null,
+            latestScanJob: latestJob ? {
+              id: latestJob.id,
+              status: latestJob.status,
+              progress: latestJob.progress,
+              error: latestJob.error,
+              created_at: latestJob.created_at,
+            } : null,
+            socialAccountsCount: accountsCount || 0,
+            socialAccounts: accounts || [],
+            creatorMetricsCount: metricsCount || 0,
+            kitDataStatus: data.status,
+            kitDataScanJobId: data.scanJobId,
+          });
+
+          // If scan job failed, fetch error message
+          if (latestJob && latestJob.status === 'failed') {
+            setScanJobError(latestJob.error || 'Unknown error');
+          } else {
+            setScanJobError(null);
+          }
+        }
+
+        // Handle scanning state - poll for updates
+        if (data.status === 'scanning' && data.scanJobId) {
+          setScanning(true);
+          const pollInterval = setInterval(async () => {
+            const updatedData = await getMediaKitData(user.id);
+            setKitData(updatedData);
+            if (updatedData.status !== 'scanning') {
+              clearInterval(pollInterval);
+              setScanning(false);
+            }
+          }, 2000);
+          return () => clearInterval(pollInterval);
+        } else {
+          setScanning(false);
         }
       } catch (err) {
-        console.error('Failed to fetch media kit:', err);
+        console.error('[PublicMediaKit] Failed to fetch media kit data:', err);
+      } finally {
+        setLoading(false);
       }
-
-      setLoading(false);
     };
 
     fetchData();
-  }, [user, authLoading]);
+  }, [user, authLoading, scanning]);
 
-  const handleGenerateKit = async () => {
+  const router = useRouter();
+
+  const handleStartScan = async () => {
     if (!user) return;
     
-    setGenerating(true);
+    setScanning(true);
+    let requestTimeout: NodeJS.Timeout | null = null;
+    
     try {
-      const response = await fetch('/api/scan/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ platform: 'youtube', userId: user.id }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to generate media kit');
+      // Get auth token for API call
+      const { supabase } = await import('../lib/supabaseClient');
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session?.access_token) {
+        throw new Error('Not authenticated');
       }
 
-      // Wait a bit, then refresh
-      setTimeout(async () => {
-        const { supabase } = await import('../lib/supabaseClient');
-        const { data } = await supabase
-          .from('media_kits')
-          .select('kit, updated_at')
-          .eq('user_id', user.id)
-          .single();
+      // Call unified scan start endpoint with timeout
+      const controller = new AbortController();
+      requestTimeout = setTimeout(() => controller.abort(), 12000); // 12s timeout
 
-        if (data) {
-          setMediaKit(data.kit);
-        }
-        setGenerating(false);
-      }, 3000);
-    } catch (err) {
-      console.error('Generate kit error:', err);
-      alert('Failed to generate media kit. Please try again.');
-      setGenerating(false);
+      const response = await fetch('/api/scan/start', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ userId: user.id }),
+        signal: controller.signal,
+      });
+
+      if (requestTimeout) clearTimeout(requestTimeout);
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(errorData.error || 'Failed to start scan');
+      }
+
+      const data = await response.json();
+      
+      if (!data.ok || !data.scan_job_id) {
+        throw new Error('Invalid response from scan start');
+      }
+
+      // Navigate to scanning screen with job ID
+      router.push(`/onboarding/scanning?job=${data.scan_job_id}`);
+      // Don't set scanning(false) here - let the scanning page handle state
+    } catch (err: any) {
+      if (requestTimeout) clearTimeout(requestTimeout);
+      
+      console.error('[Scan Now] Error:', err);
+      
+      // Show error message (visible in dev)
+      if (process.env.NODE_ENV === 'development') {
+        alert(`Failed to start scan: ${err.message || 'Unknown error'}`);
+      } else {
+        alert('Failed to start scan. Please try again.');
+      }
+      
+      setScanning(false);
     }
   };
   
-  const username = profile?.username || user?.email?.split('@')[0] || 'creator';
+  const username = kitData?.profile?.username || profile?.username || user?.email?.split('@')[0] || 'creator';
   const shareUrl = `exla.app/u/${username}`;
 
   const copyToClipboard = () => {
     navigator.clipboard.writeText(shareUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleEditName = (e?: React.MouseEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    setNameValue(kitData?.profile?.name || profile?.name || username);
+    setEditingName(true);
+  };
+
+  const handleSaveName = async () => {
+    if (!user || !nameValue.trim()) return;
+    
+    setSavingName(true);
+    try {
+      const trimmedName = nameValue.trim();
+      
+      // Get auth token for API call
+      const { supabase } = await import('../lib/supabaseClient');
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session?.access_token) {
+        throw new Error('Not authenticated');
+      }
+      
+      // Use API route to bypass client-side schema cache issues
+      const response = await fetch('/api/profile/update-name', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ name: trimmedName, userId: user.id }),
+      });
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to save name');
+      }
+      
+      // Update via OnboardingContext if available (for global state)
+      if (onboardingContext?.updateProfile) {
+        await onboardingContext.updateProfile({ name: trimmedName });
+        // Refresh to get latest state
+        await onboardingContext.refreshProfile();
+      }
+      
+      // Update local state immediately
+      setProfile(prev => prev ? {
+        ...prev,
+        name: trimmedName,
+      } : null);
+      
+      setEditingName(false);
+    } catch (err: any) {
+      console.error('Failed to save name:', err);
+      alert(`Failed to save name: ${err.message || 'Please try again.'}`);
+    } finally {
+      setSavingName(false);
+    }
+  };
+
+  const handleCancelEditName = () => {
+    setEditingName(false);
+    setNameValue('');
   };
 
   if (loading || authLoading) {
@@ -1359,8 +1510,8 @@ const PublicMediaKit = ({ onClose }: { onClose: () => void }) => {
 
   return (
     <PhoneModal onClickBackdrop={onClose}>
-      <div className="absolute inset-0 bg-white overflow-y-auto overscroll-contain no-scrollbar">
-        <Screen scroll={true} className="pt-6 pb-24">
+      <div className="absolute inset-0 bg-white flex flex-col">
+        <Screen scroll={true} className="pt-6 pb-32 flex-1">
           <Container>
             <div className="flex items-center justify-between mb-6">
               <ExlaLogo size={24} />
@@ -1369,85 +1520,273 @@ const PublicMediaKit = ({ onClose }: { onClose: () => void }) => {
               </button>
             </div>
 
-            <div className="space-y-6">
-          <div className="text-center">
-            <div className="w-20 h-20 bg-gradient-to-br from-indigo-100 to-purple-100 rounded-full mx-auto mb-4 flex items-center justify-center">
-              {profile?.avatar_url ? (
-                <img src={profile.avatar_url} alt={username} className="w-full h-full rounded-full object-cover" />
+            <div className="space-y-8 pb-8">
+          {/* Hero Header - Premium Design (Fixed Visual Artifacts) */}
+          <div className="rounded-2xl overflow-hidden relative shadow-xl ring-1 ring-white/10">
+            <div className="absolute inset-0 bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500"></div>
+            <div className="relative p-8 text-center">
+              <div className="relative inline-block mb-5">
+                <div className="absolute inset-0 rounded-full bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 blur-xl opacity-60"></div>
+                <div className="relative w-28 h-28 bg-white rounded-full mx-auto flex items-center justify-center ring-2 ring-white/80 shadow-lg">
+                  {profile?.avatar_url ? (
+                    <img src={profile.avatar_url} alt={username} className="w-full h-full rounded-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full rounded-full bg-gradient-to-br from-indigo-100 to-purple-100 flex items-center justify-center">
+                      <span className="text-4xl">👤</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center justify-center gap-2 mb-1">
+                {editingName ? (
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={nameValue}
+                      onChange={(e) => setNameValue(e.target.value)}
+                      className="text-2xl font-semibold text-white bg-white/20 border border-white/30 rounded-lg px-3 py-1.5 text-center focus:outline-none focus:ring-2 focus:ring-white/50"
+                      autoFocus
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (!savingName && nameValue.trim()) {
+                            handleSaveName();
+                          }
+                        }
+                        if (e.key === 'Escape') {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          handleCancelEditName();
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleSaveName();
+                      }}
+                      disabled={savingName || !nameValue.trim()}
+                      className="text-white hover:text-white/80 disabled:opacity-50"
+                    >
+                      {savingName ? (
+                        <Loader2 size={18} className="animate-spin" />
+                      ) : (
+                        <Check size={18} />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleCancelEditName();
+                      }}
+                      disabled={savingName}
+                      className="text-white/80 hover:text-white disabled:opacity-50"
+                    >
+                      <X size={18} />
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <h1 className="text-2xl font-semibold text-white">
+                      {kitData?.profile?.name || profile?.name || username}
+                    </h1>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleEditName(e);
+                      }}
+                      className="text-white/70 hover:text-white transition-colors"
+                      title="Edit name"
+                    >
+                      <Edit2 size={16} />
+                    </button>
+                  </>
+                )}
+              </div>
+              <p className="text-sm text-white/90 mb-3">@{username}</p>
+              <p className="text-xs text-white/80 font-medium">
+                {(() => {
+                  const niche = kitData?.profile?.niche || creator?.niche || profile?.niche || inferredNiche;
+                  const primaryPlatform = profile?.primary_platform || kitData?.platforms?.[0]?.platform || 'Creator';
+                  if (niche && niche !== 'Creator' && niche !== 'N/A') {
+                    return `${primaryPlatform} Creator • ${niche}`;
+                  }
+                  // Only show generic if truly no data
+                  return 'Creator • Brand collaborations';
+                })()}
+              </p>
+            </div>
+          </div>
+
+          {/* Handle different states */}
+          {kitData?.status === 'scanning' || scanning ? (
+            <div className="py-8 text-center space-y-4">
+              <Loader2 className="animate-spin text-indigo-600 mx-auto" size={32} />
+              <p className="text-sm text-gray-600">Scanning your account...</p>
+              <div className="space-y-2">
+                <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
+                  <div className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 animate-pulse" style={{ width: '60%' }} />
+                </div>
+              </div>
+            </div>
+          ) : kitData?.status === 'missing' ? (
+            <div className="py-8 text-center space-y-4">
+              {scanJobError ? (
+                <>
+                  <div className="p-4 bg-red-50 border border-red-200 rounded-lg mb-4">
+                    <p className="text-sm font-semibold text-red-900 mb-1">Scan Failed</p>
+                    <p className="text-xs text-red-700">{scanJobError}</p>
+                  </div>
+                  <Button 
+                    onClick={handleStartScan} 
+                    disabled={scanning}
+                    variant="primary"
+                  >
+                    {scanning ? (
+                      <>
+                        <Loader2 className="animate-spin mr-2" size={16} />
+                        Starting scan...
+                      </>
+                    ) : (
+                      'Retry Scan'
+                    )}
+                  </Button>
+                </>
               ) : (
-              <span className="text-3xl">👤</span>
+                <>
+                  <p className="text-sm text-gray-600">No scan data found. Scan your account to generate your media kit.</p>
+                  <Button 
+                    onClick={handleStartScan} 
+                    disabled={scanning}
+                    variant="primary"
+                  >
+                    {scanning ? (
+                      <>
+                        <Loader2 className="animate-spin mr-2" size={16} />
+                        Starting scan...
+                      </>
+                    ) : (
+                      'Scan Now'
+                    )}
+                  </Button>
+                </>
+              )}
+              
+              {/* Dev-only diagnostics */}
+              {(process.env.NODE_ENV === 'development' || (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('debug') === '1')) && diagnostics && (
+                <div className="mt-8 p-4 bg-gray-50 border border-gray-200 rounded-lg text-left">
+                  <p className="text-xs font-semibold text-gray-900 mb-3">🔍 Diagnostics (Dev Only)</p>
+                  <div className="space-y-2 text-xs font-mono">
+                    <div><span className="text-gray-600">Auth User ID:</span> <span className="text-gray-900">{diagnostics.authUserId}</span></div>
+                    <div><span className="text-gray-600">Profile exists:</span> <span className={diagnostics.profileExists ? 'text-green-600' : 'text-red-600'}>{diagnostics.profileExists ? 'Yes' : 'No'}</span></div>
+                    {diagnostics.latestScanJob ? (
+                      <>
+                        <div><span className="text-gray-600">Latest scan job:</span> <span className="text-gray-900">{diagnostics.latestScanJob.id}</span></div>
+                        <div><span className="text-gray-600">Status:</span> <span className="text-gray-900">{diagnostics.latestScanJob.status}</span></div>
+                        <div><span className="text-gray-600">Progress:</span> <span className="text-gray-900">{diagnostics.latestScanJob.progress}%</span></div>
+                        <div><span className="text-gray-600">Created:</span> <span className="text-gray-900">{new Date(diagnostics.latestScanJob.created_at).toLocaleString()}</span></div>
+                        {diagnostics.latestScanJob.error && (
+                          <div><span className="text-gray-600">Error:</span> <span className="text-red-600">{diagnostics.latestScanJob.error}</span></div>
+                        )}
+                      </>
+                    ) : (
+                      <div><span className="text-red-600">No scan job found</span></div>
+                    )}
+                    <div><span className="text-gray-600">Social accounts:</span> <span className="text-gray-900">{diagnostics.socialAccountsCount}</span></div>
+                    {diagnostics.socialAccounts && diagnostics.socialAccounts.length > 0 && (
+                      <div className="ml-4">
+                        {diagnostics.socialAccounts.map((acc: any, i: number) => (
+                          <div key={i} className="text-gray-700">
+                            - {acc.platform} (@{acc.handle || 'N/A'}) - {acc.scan_status || 'N/A'}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div><span className="text-gray-600">Creator metrics:</span> <span className="text-gray-900">{diagnostics.creatorMetricsCount}</span></div>
+                    <div><span className="text-gray-600">Kit data status:</span> <span className="text-gray-900">{diagnostics.kitDataStatus}</span></div>
+                    {diagnostics.kitDataScanJobId && (
+                      <div><span className="text-gray-600">Kit scan job ID:</span> <span className="text-gray-900">{diagnostics.kitDataScanJobId}</span></div>
+                    )}
+                  </div>
+                </div>
               )}
             </div>
-            <h1 className="text-2xl font-bold text-gray-900">@{username}</h1>
-            <p className="text-sm text-gray-600 mt-2 max-w-sm mx-auto">
-              {profile?.full_name || creator?.niche || 'Content creator'}
-            </p>
-          </div>
-
-          {!mediaKit ? (
-            <div className="py-8 text-center space-y-4">
-              <p className="text-sm text-gray-600">Your media kit is being generated...</p>
-              <Button 
-                onClick={handleGenerateKit} 
-                disabled={generating}
-                variant="primary"
-              >
-                {generating ? (
-                  <>
-                    <Loader2 className="animate-spin mr-2" size={16} />
-                    Generating...
-                  </>
-                ) : (
-                  'Generate Media Kit'
-                )}
-              </Button>
-            </div>
-          ) : (
+          ) : kitData && kitData.status === 'ready' ? (
             <>
-              <div className="text-center mb-4">
-                <h2 className="text-xl font-bold text-gray-900">{mediaKit.name || profile?.full_name || username}</h2>
-                {mediaKit.niche && (
-                  <p className="text-sm text-indigo-600 mt-1">{mediaKit.niche}</p>
-                )}
+          {/* Stats Pills - Premium Cards with fixed layout */}
+          <div className="grid grid-cols-3 gap-3">
+            <div className="bg-white rounded-2xl px-4 py-4 shadow-sm border border-gray-100 min-h-[100px] flex flex-col justify-between">
+              <div className="flex items-center gap-2 mb-2">
+                <Users size={16} className="text-indigo-600 shrink-0" />
+                <p className="text-xs text-gray-500 font-medium tracking-wide label-text">Audience</p>
+              </div>
+              <p className="text-lg font-semibold text-gray-900">
+                {kitData.stats.audience > 0 ? kitData.stats.audience.toLocaleString() : '--'}
+              </p>
+            </div>
+            <div className="bg-white rounded-2xl px-4 py-4 shadow-sm border border-gray-100 min-h-[100px] flex flex-col justify-between">
+              <div className="flex items-center gap-2 mb-2">
+                <Eye size={16} className="text-indigo-600 shrink-0" />
+                <p className="text-xs text-gray-500 font-medium tracking-wide label-text">Avg views</p>
+              </div>
+              <p className="text-lg font-semibold text-gray-900">
+                {kitData.stats.avgViews > 0 ? kitData.stats.avgViews.toLocaleString() : '--'}
+              </p>
+            </div>
+            <div className="bg-white rounded-2xl px-4 py-4 shadow-sm border border-gray-100 min-h-[100px] flex flex-col justify-between">
+              <div className="flex items-center gap-2 mb-2">
+                <TrendingUp size={16} className="text-indigo-600 shrink-0" />
+                <p className="text-xs text-gray-500 font-medium tracking-wide label-text">Engagement</p>
+              </div>
+              <p className="text-lg font-semibold text-indigo-600">
+                {kitData.stats.engagement > 0 ? `${kitData.stats.engagement.toFixed(1)}%` : '--'}
+              </p>
+            </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4 py-6 border-y border-gray-200">
-            <div className="text-center">
-                  <p className="text-2xl font-bold text-gray-900">
-                    {mediaKit.platforms?.reduce((sum: number, p: any) => sum + (p.followers || 0), 0).toLocaleString() || creator?.audience_size?.toLocaleString() || '0'}
-                  </p>
-                  <p className="text-xs text-gray-600 mt-1">Total Followers</p>
-            </div>
-            <div className="text-center">
-                  <p className="text-2xl font-bold text-indigo-600">{creator?.niche || mediaKit.niche || 'N/A'}</p>
-                  <p className="text-xs text-gray-600 mt-1">Niche</p>
-            </div>
-          </div>
-
-              {mediaKit.platforms && mediaKit.platforms.length > 0 && (
-          <div>
-                  <h3 className="text-sm font-semibold text-gray-900 mb-3">Platforms</h3>
-                  <div className="space-y-3">
-                    {mediaKit.platforms.map((platform: any, i: number) => (
-                      <div key={i} className="p-3 border border-gray-200 rounded-lg">
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-sm font-medium text-gray-900 capitalize">{platform.platform}</span>
-                          {platform.handle && (
-                            <span className="text-xs text-gray-500">@{platform.handle}</span>
-                          )}
+              {/* Platforms Section - Clean Card Style */}
+              {kitData.platforms && kitData.platforms.length > 0 && (
+                <div>
+                  <h3 className="text-xs font-semibold text-gray-900 mb-4 tracking-wide uppercase">Platforms</h3>
+                  <div className="space-y-4">
+                    {kitData.platforms.map((platform: any, i: number) => (
+                      <div key={i} className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
+                        <div className="flex items-center gap-4 mb-5">
+                          <div className="w-16 h-16 bg-gradient-to-br from-indigo-50 to-purple-50 rounded-xl flex items-center justify-center shadow-sm">
+                            {platform.platform === 'youtube' ? (
+                              <Youtube size={28} className="text-red-600" />
+                            ) : platform.platform === 'tiktok' ? (
+                              <span className="text-3xl">🎵</span>
+                            ) : (
+                              <Instagram size={28} className="text-pink-600" />
+                            )}
+                          </div>
+                          <div className="flex-1">
+                            <p className="text-sm font-semibold text-gray-900 capitalize mb-1">{platform.platform}</p>
+                            {platform.handle && (
+                              <p className="text-xs text-gray-500">@{platform.handle}</p>
+                            )}
+                          </div>
                         </div>
-                        <div className="grid grid-cols-3 gap-2 text-xs">
+                        <div className="grid grid-cols-3 gap-3 pt-4 border-t border-gray-100">
                           <div>
-                            <p className="text-gray-500">Followers</p>
-                            <p className="font-semibold text-gray-900">{platform.followers?.toLocaleString() || '0'}</p>
+                            <p className="text-xs text-gray-500 mb-1.5 tracking-wide label-text">Followers</p>
+                            <p className="text-sm font-semibold text-gray-900">{platform.followers?.toLocaleString() || '--'}</p>
                           </div>
                           <div>
-                            <p className="text-gray-500">Avg Views</p>
-                            <p className="font-semibold text-gray-900">{platform.avg_views_10?.toLocaleString() || '0'}</p>
+                            <p className="text-xs text-gray-500 mb-1.5 tracking-wide label-text">Avg views</p>
+                            <p className="text-sm font-semibold text-gray-900">{platform.avg_views_10?.toLocaleString() || '--'}</p>
                           </div>
                           <div>
-                            <p className="text-gray-500">Engagement</p>
-                            <p className="font-semibold text-indigo-600">{platform.engagement_rate_10?.toFixed(2) || '0'}%</p>
+                            <p className="text-xs text-gray-500 mb-1.5 tracking-wide label-text">Engagement</p>
+                            <p className="text-sm font-semibold text-indigo-600">{platform.engagement_rate_10 ? `${platform.engagement_rate_10.toFixed(1)}%` : '--'}</p>
                           </div>
                         </div>
                       </div>
@@ -1456,63 +1795,94 @@ const PublicMediaKit = ({ onClose }: { onClose: () => void }) => {
                 </div>
               )}
 
-              {mediaKit.top_content && mediaKit.top_content.length > 0 && (
-                <div>
-                  <h3 className="text-sm font-semibold text-gray-900 mb-3">Top Content</h3>
-            <div className="space-y-2">
-                    {mediaKit.top_content.slice(0, 5).map((content: any, i: number) => (
-                      <div key={i} className="p-3 border border-gray-200 rounded-lg">
-                        <p className="text-sm font-medium text-gray-900 mb-1">{content.title}</p>
-                        <div className="flex items-center justify-between text-xs text-gray-500">
-                          <span className="capitalize">{content.platform || 'YouTube'}</span>
-                          <span>{content.views?.toLocaleString() || '0'} views</span>
-                        </div>
+              {/* Brand Pitch Section - Premium Card */}
+              <div className="bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50 rounded-2xl p-6 shadow-sm border border-indigo-100/50">
+                <h3 className="text-xs font-semibold text-gray-900 mb-5 tracking-wide uppercase">Brand fit</h3>
+                <div className="space-y-4">
+                  <div className="flex items-start gap-3">
+                    <div className="w-5 h-5 rounded-full bg-indigo-600 flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <Check className="w-3 h-3 text-white" />
+                    </div>
+                    <p className="text-sm text-gray-700 font-medium">High engagement audience</p>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <div className="w-5 h-5 rounded-full bg-indigo-600 flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <Check className="w-3 h-3 text-white" />
+                    </div>
+                    <p className="text-sm text-gray-700 font-medium">Brand-safe content</p>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <div className="w-5 h-5 rounded-full bg-indigo-600 flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <Check className="w-3 h-3 text-white" />
+                    </div>
+                    <p className="text-sm text-gray-700 font-medium">Strong storytelling</p>
+                  </div>
+                  {(kitData?.profile?.niche || creator?.niche) && (
+                    <div className="flex items-start gap-3">
+                      <div className="w-5 h-5 rounded-full bg-indigo-600 flex items-center justify-center flex-shrink-0 mt-0.5">
+                        <Check className="w-3 h-3 text-white" />
+                      </div>
+                      <p className="text-sm text-gray-700 font-medium">{(kitData?.profile?.niche || creator?.niche)} audience</p>
+                    </div>
+                  )}
                 </div>
-              ))}
-            </div>
-          </div>
+              </div>
+
+              {/* Top Content Section - Visual Cards */}
+              {kitData.topContent && kitData.topContent.length > 0 && (
+                <div>
+                  <h3 className="text-xs font-semibold text-gray-900 mb-4 tracking-wide uppercase">Top Content</h3>
+                  <div className="space-y-4">
+                    {kitData.topContent.slice(0, 5).map((content: any, i: number) => (
+                      <div key={i} className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex items-center gap-4">
+                        <div className="w-24 h-24 bg-gradient-to-br from-indigo-200 via-purple-200 to-pink-200 rounded-xl flex-shrink-0 flex items-center justify-center overflow-hidden shadow-sm">
+                          {content.thumbnailUrl ? (
+                            <img src={content.thumbnailUrl} alt={content.title} className="w-full h-full object-cover" />
+                          ) : (
+                            <span className="text-3xl">🎬</span>
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-semibold text-gray-900 line-clamp-2 mb-2 leading-snug">{content.title || 'Untitled'}</p>
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-gray-500 capitalize px-2 py-0.5 bg-gray-100 rounded-full">{content.platform || 'YouTube'}</span>
+                            <span className="text-base font-semibold text-gray-900">{content.views?.toLocaleString() || '--'} views</span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
 
-              {mediaKit.suggested_rates && (
-                <div className="p-4 bg-indigo-50 rounded-lg">
-                  <p className="text-xs text-gray-600 mb-1">Suggested Rate Range</p>
-                  <p className="text-lg font-semibold text-indigo-900">
-                    ${mediaKit.suggested_rates.min?.toLocaleString() || '0'} - ${mediaKit.suggested_rates.max?.toLocaleString() || '0'} {mediaKit.suggested_rates.currency || 'USD'}
+              {kitData.suggestedRateRange && (
+                <div className="bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 rounded-2xl p-6 text-white shadow-xl">
+                  <p className="text-xs text-white/90 mb-2 tracking-wide uppercase font-medium">Suggested Rate Range</p>
+                  <p className="text-2xl font-semibold">
+                    ${kitData.suggestedRateRange.min?.toLocaleString() || '0'} - ${kitData.suggestedRateRange.max?.toLocaleString() || '0'} {kitData.suggestedRateRange.currency || 'USD'}
                   </p>
                 </div>
               )}
             </>
-          )}
+          ) : null}
 
-          <div className="p-4 bg-gray-50 rounded-lg">
-            <p className="text-xs text-gray-600 mb-2">Share link</p>
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                value={shareUrl}
-                readOnly
-                className="flex-1 px-3 py-2 text-sm bg-white border border-gray-200 rounded-lg"
-              />
-              <button
-                type="button"
-                onClick={copyToClipboard}
-                className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-1.5"
-              >
-                {copied ? <Check size={16} /> : <Copy size={16} />}
-                <span className="text-sm">{copied ? 'Copied' : 'Copy'}</span>
-              </button>
-            </div>
-          </div>
-
-          <div className="pt-6 border-t border-gray-200 text-center">
-            <PoweredByExla />
-            <button type="button" className="mt-4 px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-medium w-full">
-              Contact for collaboration
-            </button>
-          </div>
             </div>
           </Container>
         </Screen>
+        
+        {/* CTA Footer - Sticky outside scroll content */}
+        <StickyFooterCTA 
+          onCopy={copyToClipboard}
+          onShare={() => {
+            if (navigator.share) {
+              navigator.share({ title: 'Media Kit', url: shareUrl }).catch(() => {});
+            } else {
+              copyToClipboard();
+            }
+          }}
+          copied={copied}
+          shareUrl={shareUrl}
+        />
       </div>
     </PhoneModal>
   );
@@ -1521,81 +1891,27 @@ const PublicMediaKit = ({ onClose }: { onClose: () => void }) => {
 // Onboarding screens (simplified versions)
 const ConnectAccount = ({ onConnect }: { onConnect: () => void }) => {
   const { user, loading: authLoading } = useAuth();
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (authLoading) return;
-    
-    if (user) {
-      // User is authenticated, ensure profile and creator exist
-      const setupProfile = async () => {
-        setLoading(true);
-        try {
-          const profile = await ensureProfile(user);
-          if (!profile) {
-            setError('Failed to create profile');
-            setLoading(false);
-            return;
-          }
-
-          // Check if creator profile exists, if not create one
-          let creator = await getCreatorProfile(user.id);
-          if (!creator) {
-      creator = await createCreatorProfile(user.id, {
-        niche: undefined,
-        platforms: undefined,
-        audience_size: undefined,
-      });
-          }
-
-          if (creator) {
-      onConnect();
-          } else {
-            setError('Failed to create creator profile');
-          }
-        } catch (err) {
-          console.error('Error setting up profile:', err);
-          setError('An error occurred during setup');
-        } finally {
-          setLoading(false);
-        }
-      };
-
-      setupProfile();
-    }
-  }, [user, authLoading, onConnect]);
-
-  if (authLoading || loading) {
+  // Don't auto-setup or auto-connect
+  // OnboardingGuard will handle routing for authenticated users
+  // This component only shows welcome screen for unauthenticated users
+  
+  // If user is authenticated, OnboardingGuard will redirect them
+  // So we should never see this component for authenticated users
+  // But if we do, show a loading state
+  if (user) {
     return (
-      <div 
-        className="h-full w-full flex flex-col items-center justify-center px-6 text-center overflow-hidden"
-        style={{
-          background: 'linear-gradient(to bottom, #fafafa 0%, #ffffff 100%)',
-          paddingTop: 'max(2rem, env(safe-area-inset-top, 2rem))',
-          paddingBottom: 'max(2rem, env(safe-area-inset-bottom, 2rem))',
-        }}
-      >
-        <div className="w-full max-w-[340px] mx-auto space-y-10">
-          {/* outline outline-1 outline-red-500/20 */}
-          <div className="text-center space-y-6">
-            <div className="flex justify-center items-center">
-              <ExlaLogo size={56} />
-            </div>
-            <div className="space-y-3">
-              <h1 className="text-4xl font-bold text-gray-900 tracking-tight">
-                Welcome to Exla
-              </h1>
-              <p className="text-base text-gray-500 font-normal">
-                Your AI Manager for Brand Deals
-              </p>
-            </div>
-          </div>
-          <div className="space-y-3 pt-4">
-            <Loader2 className="animate-spin mx-auto text-indigo-600" size={32} />
-            <p className="text-sm text-gray-500">Setting up your profile...</p>
-          </div>
-        </div>
+      <div className="h-full w-full flex items-center justify-center">
+        <Loader2 className="animate-spin text-indigo-600" size={32} />
+      </div>
+    );
+  }
+
+  if (authLoading) {
+    return (
+      <div className="h-full w-full flex items-center justify-center">
+        <Loader2 className="animate-spin text-indigo-600" size={32} />
       </div>
     );
   }
@@ -1633,54 +1949,56 @@ const ConnectAccount = ({ onConnect }: { onConnect: () => void }) => {
     );
   }
 
+
   if (!user) {
     return (
-      <Screen center scroll={false} className="flex flex-col gap-10 text-center animate-welcome-entrance">
-          
-          {/* Logo and Headline Group */}
-          <div className="flex flex-col gap-6 items-center w-full">
-            {/* Logo - explicitly centered */}
-            <div className="flex justify-center items-center">
-              <ExlaLogo size={56} />
+      <div className="h-full flex flex-col overflow-hidden">
+        <div className="flex-1 flex items-center justify-center overflow-hidden">
+          <div className="w-full max-w-sm px-6 pb-28 text-center animate-welcome-entrance">
+            {/* Logo and Headline Group */}
+            <div className="flex flex-col gap-6 items-center w-full mb-10">
+              {/* Logo - explicitly centered */}
+              <div className="flex justify-center items-center">
+                <ExlaLogo size={56} />
+              </div>
+              
+              {/* Headline and Subtitle */}
+              <div className="flex flex-col gap-3 items-center w-full">
+                <h1 className="text-4xl font-bold text-gray-900 tracking-tight text-center w-full">
+                  Welcome to Exla
+                </h1>
+                <p className="text-base text-gray-500 font-normal text-center w-full">
+                  Your AI Manager for Brand Deals
+                </p>
+              </div>
             </div>
-            
-            {/* Headline and Subtitle */}
-            <div className="flex flex-col gap-3 items-center w-full">
-              <h1 className="text-4xl font-bold text-gray-900 tracking-tight text-center w-full">
-                Welcome to Exla
-              </h1>
-              <p className="text-base text-gray-500 font-normal text-center w-full">
-                Your AI Manager for Brand Deals
+
+            {/* Actions Group - all centered, same width */}
+            <div className="w-full flex flex-col gap-3 items-center">
+              <a href="/auth/login" className="w-full">
+                <button
+                  className="w-full px-5 py-3.5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-semibold rounded-xl shadow-lg shadow-indigo-500/25 hover:shadow-xl hover:shadow-indigo-500/30 hover:from-indigo-700 hover:to-purple-700 transition-transform duration-150 active:scale-[0.99]"
+                >
+                  Sign In
+                </button>
+              </a>
+              
+              <a href="/onboarding/welcome" className="w-full">
+                <button
+                  className="w-full px-5 py-3.5 bg-white border-2 border-gray-200 text-gray-900 font-semibold rounded-xl hover:border-gray-300 hover:bg-gray-50 transition-transform duration-150 active:scale-[0.99] shadow-sm"
+                >
+                  Create Account
+                </button>
+              </a>
+              
+              {/* Trust Cue - centered */}
+              <p className="text-xs text-gray-400 text-center pt-2 w-full">
+                Used by creators to land brand deals
               </p>
             </div>
           </div>
-
-          {/* Actions Group - all centered, same width */}
-          <div className="w-full flex flex-col gap-3 items-center">
-            {/* outline outline-1 outline-blue-500/20 */}
-            
-            <a href="/auth/login" className="w-full">
-              <button
-                className="w-full px-5 py-3.5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-semibold rounded-xl shadow-lg shadow-indigo-500/25 hover:shadow-xl hover:shadow-indigo-500/30 hover:from-indigo-700 hover:to-purple-700 transition-transform duration-150 active:scale-[0.99]"
-              >
-                Sign In
-              </button>
-            </a>
-            
-            <a href="/auth/signup" className="w-full">
-              <button
-                className="w-full px-5 py-3.5 bg-white border-2 border-gray-200 text-gray-900 font-semibold rounded-xl hover:border-gray-300 hover:bg-gray-50 transition-transform duration-150 active:scale-[0.99] shadow-sm"
-              >
-                Create Account
-              </button>
-            </a>
-            
-            {/* Trust Cue - centered */}
-            <p className="text-xs text-gray-400 text-center pt-2 w-full">
-              Used by creators to land brand deals
-            </p>
-          </div>
-      </Screen>
+        </div>
+      </div>
     );
   }
 
@@ -2677,8 +2995,8 @@ const CreatorDiscover = () => {
     }
   };
 
-  // Use data from store
-  const recommendations = userData.brandRecommendations || [];
+  // Use data from store - ensure recommendations is always an array to prevent hooks order changes
+  const recommendations = Array.isArray(userData.brandRecommendations) ? userData.brandRecommendations : [];
   const creatorMetrics = userData.creatorMetrics?.find(m => m.platform === 'youtube') || null;
   const creatorProfile = userData.creatorProfile;
   const loading = userData.loading && recommendations.length === 0 && !userData.brandRecommendations;
@@ -3228,7 +3546,7 @@ const CreatorDiscover = () => {
     }, 5000);
 
     return () => clearInterval(interval);
-  }, [brandContacts, recommendations]);
+  }, [brandContacts, recommendations, user?.id]);
 
   // Helper to get contact info array from brand_contacts data
   const getContactInfo = (brand: any) => {
@@ -5089,6 +5407,7 @@ const SettingsScreen = ({ onBack, onSignOut }: { onBack: () => void; onSignOut: 
   const { user } = useAuth();
   const { settings, updateSetting } = useSettings();
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
 
   // Ensure light mode is always applied
   useEffect(() => {
@@ -5104,9 +5423,46 @@ const SettingsScreen = ({ onBack, onSignOut }: { onBack: () => void; onSignOut: 
   };
 
   const handleDeleteAccount = async () => {
-    // Placeholder - implement actual deletion logic
-    alert('Account deletion not yet implemented');
-    setShowDeleteConfirm(false);
+    if (!user) return;
+    
+    setDeletingAccount(true);
+    try {
+      // Get auth token
+      const { supabase } = await import('../lib/supabaseClient');
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session?.access_token) {
+        throw new Error('Not authenticated');
+      }
+      
+      // Call API route to delete account
+      const response = await fetch('/api/account/delete', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+      });
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to delete account');
+      }
+      
+      // Sign out the user
+      await supabase.auth.signOut();
+      
+      // Close modal and redirect
+      setShowDeleteConfirm(false);
+      
+      // Reload the page to clear all state and show landing screen
+      window.location.href = '/';
+    } catch (err: any) {
+      console.error('Delete account error:', err);
+      alert(`Failed to delete account: ${err.message || 'Please try again.'}`);
+      setDeletingAccount(false);
+    }
   };
 
   return (
@@ -5237,9 +5593,17 @@ const SettingsScreen = ({ onBack, onSignOut }: { onBack: () => void; onSignOut: 
                 <Button
                   fullWidth
                   onClick={handleDeleteAccount}
-                  className="bg-red-600 hover:bg-red-700"
+                  disabled={deletingAccount}
+                  className="bg-red-600 hover:bg-red-700 disabled:opacity-50"
                 >
-                  Delete account
+                  {deletingAccount ? (
+                    <>
+                      <Loader2 className="animate-spin mr-2 inline" size={16} />
+                      Deleting...
+                    </>
+                  ) : (
+                    'Delete account'
+                  )}
                 </Button>
               </div>
             </div>
@@ -5598,7 +5962,9 @@ function ExlaApp() {
     if (authLoading) return;
     
     if (user) {
-        setScreen('app');
+      // User is authenticated - let OnboardingGuard handle routing
+      // Don't force screen change here, let the guard redirect appropriately
+      setScreen('app');
     } else {
       setScreen('connect');
     }
@@ -5611,7 +5977,7 @@ function ExlaApp() {
 
   if (authLoading) {
     return (
-      <div className="min-h-screen bg-white flex items-center justify-center">
+      <div className="h-full w-full bg-white flex items-center justify-center">
         <Loader2 className="animate-spin text-indigo-600" size={32} />
       </div>
     );
@@ -5639,7 +6005,7 @@ function ExlaApp() {
 
   if (screen === 'connect') {
     return (
-      <div className="w-full bg-white min-h-screen">
+      <div className="h-full w-full bg-white flex flex-col">
         <ConnectAccount onConnect={() => setScreen('app')} />
       </div>
     );

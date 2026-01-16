@@ -12,7 +12,7 @@ export async function POST(req: NextRequest) {
     // Verify token exists
     const { data: tokenRow, error: tokenErr } = await supabaseAdmin
       .from("tokens")
-      .select("*")
+      .select("id, user_id, platform, platform_user_id, handle, access_token, refresh_token, expires_at, created_at, scan_status")
       .eq("user_id", userId)
       .eq("provider", platform)
       .single();
@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
     const { data, error } = await supabaseAdmin
       .from("social_posts")
       .upsert(demoPosts, { onConflict: "user_id,platform,platform_post_id" })
-      .select("*")
+      .select("id, user_id, platform, platform_post_id, caption, metrics, posted_at, fetched_at")
       .order("posted_at", { ascending: false });
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 

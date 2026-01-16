@@ -11,6 +11,7 @@ export interface ScanLogEntry {
   endpoint?: string;
   http_status?: number;
   http_error?: string;
+  response_body?: string; // Safe to log TikTok error JSON (no tokens)
   db_result?: 'success' | 'failure';
   db_error?: string;
   error_code?: string;

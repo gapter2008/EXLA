@@ -1,5 +1,7 @@
 import "./globals.css";
 import React, { ReactNode } from "react";
+import { OnboardingProvider } from "@/context/OnboardingContext";
+import { OnboardingGuard } from "@/components/OnboardingGuard";
 
 export const metadata = {
   title: "Exla",
@@ -24,39 +26,32 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <div 
             className="
               phone-frame
-              w-full
-              h-full
-              max-w-[390px]
-              max-h-[844px]
-              md:w-[390px]
-              md:h-auto
-              md:max-h-[844px]
-              md:aspect-[390/844]
+              relative
+              mx-auto
+              w-[380px]
+              aspect-[9/19.5]
               md:rounded-[2.5rem] 
               md:border-[8px] 
               md:border-gray-800 
               md:shadow-2xl
-              bg-white 
-              relative
-              flex 
-              flex-col
-              overflow-hidden
             "
             style={{
-              boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(0, 0, 0, 0.1)',
-              height: 'min(844px, calc(100vh - 4rem))',
+              boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3)',
             }}
           >
-            {/* Inner viewport container - children control their own scrolling */}
-            <div className="relative h-full w-full overflow-hidden box-border">
-              {children}
+            {/* White screen area - fills phone shell */}
+            <div className="absolute inset-0 md:rounded-[2.5rem] bg-white overflow-hidden flex flex-col">
+              <div className="h-full flex flex-col overflow-hidden">
+                <OnboardingProvider>
+                  <OnboardingGuard>
+                    {children}
+                  </OnboardingGuard>
+                </OnboardingProvider>
+              </div>
+
+              <div id="phone-modal-root" className="absolute inset-0 z-50 pointer-events-none" />
+              <div id="phone-popover-root" className="absolute inset-0 z-40 pointer-events-none" />
             </div>
-            
-            {/* Modal portal root - inside phone frame */}
-            <div id="phone-modal-root" className="absolute inset-0 z-50 pointer-events-none" />
-            
-            {/* Popover/dropdown portal root - inside phone frame */}
-            <div id="phone-popover-root" className="absolute inset-0 z-40 pointer-events-none" />
           </div>
         </div>
       </body>

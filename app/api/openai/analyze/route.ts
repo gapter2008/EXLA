@@ -51,7 +51,7 @@ export async function POST(req: NextRequest) {
       const { data, error } = await supabaseAdmin
         .from("post_analyses")
         .insert({ post_id: p.id, summary: text, hooks })
-        .select("*")
+        .select("id, post_id, summary, hooks, created_at")
         .single();
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
       analyses.push(data);
