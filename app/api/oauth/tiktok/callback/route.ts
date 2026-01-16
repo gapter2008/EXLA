@@ -1119,144 +1119,44 @@ try {
         }
       }
 
-      // Use unified scan pipeline
-      console.log(`[TikTok OAuth Callback] Request ${requestId}: Running unified scan pipeline...`);
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/7b86813a-4110-42bb-937a-5779b59b7bd2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/api/oauth/tiktok/callback/route.ts:799',message:'Before scanProviderAccount call',data:{userId,provider:'tiktok',jobId:scanJob.id},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
-      await updateScanJob(scanJob.id, { progress: 50, status: "running" });
+      // Delete the scan job we created earlier - /api/scan/start will create its own
+      try {
+        await supabaseAdmin
+          .from("scan_jobs")
+          .delete()
+          .eq("id", scanJob.id);
+      } catch (deleteErr) {
+        console.warn(`[TikTok OAuth Callback] Request ${requestId}: Failed to delete initial scan job (non-blocking):`, deleteErr);
+      }
+
+      // Call /api/scan/start to trigger the unified scan pipeline
+      console.log(`[TikTok OAuth Callback] Request ${requestId}: Starting scan via /api/scan/start...`);
+      let finalJobId = scanJob.id; // Fallback to original job ID if call fails
       
       try {
-        await scanProviderAccount(userId, "tiktok");
-        console.log(`[TikTok OAuth Callback] Request ${requestId}: Scan pipeline completed`);
-        await updateScanJob(scanJob.id, { progress: 80 });
-      } catch (scanErr: any) {
-        console.error(`[TikTok OAuth Callback] Request ${requestId}: Scan pipeline failed:`, {
-          errorMessage: scanErr.message,
-          errorCode: scanErr.code,
-          errorStatus: scanErr.status,
+        const scanStartResponse = await fetch(`${origin}/api/scan/start`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ userId }),
         });
-        
-        // Map error codes to user-friendly error codes
-        let errorCode = scanErr.code || ERROR_CODES.SCAN_JOB_FAILED;
-        if (scanErr.code === "TT_NO_TOKEN_FOR_USER") {
-          errorCode = ERROR_CODES.NO_TOKEN_FOR_USER;
-        } else if (scanErr.code === "TT_MISSING_SCOPE") {
-          // Missing scope during profile fetch is fatal - cannot proceed
-          errorCode = ERROR_CODES.MISSING_SCOPE;
-        }
-        
-        // Only fail for truly fatal errors:
-        // - No token for user (cannot scan without token)
-        // - Missing scope for basic profile (cannot proceed without profile)
-        // - Database errors (cannot save results)
-        // Everything else (missing stats/videos scope) should be handled as partial success in scanProviderAccount
-        
-        const isFatalError = 
-          errorCode === ERROR_CODES.NO_TOKEN_FOR_USER ||
-          errorCode === ERROR_CODES.MISSING_SCOPE ||
-          scanErr.message?.includes("Database") ||
-          scanErr.message?.includes("database");
-        
-        if (isFatalError) {
-          await updateScanJob(scanJob.id, {
-            status: "failed",
-            error: `Scan failed: ${scanErr.message}`,
-          });
-          
-          // Redirect with error code if it's a known fatal error
-          if (errorCode === ERROR_CODES.NO_TOKEN_FOR_USER || errorCode === ERROR_CODES.MISSING_SCOPE) {
-            return NextResponse.redirect(`${origin}/auth/tiktok/result?status=fail&reason=${errorCode}`);
+
+        if (scanStartResponse.ok) {
+          const scanStartData = await scanStartResponse.json();
+          if (scanStartData.ok && scanStartData.scan_job_id) {
+            finalJobId = scanStartData.scan_job_id;
+            console.log(`[TikTok OAuth Callback] Request ${requestId}: ✅ Scan started successfully, job ID:`, finalJobId);
+          } else {
+            console.warn(`[TikTok OAuth Callback] Request ${requestId}: ⚠️ Scan start returned unexpected response, using original job ID`);
           }
-          
-          return NextResponse.redirect(`${origin}/onboarding/scanning?job=${scanJob.id}&error=${encodeURIComponent(scanErr.message)}`);
         } else {
-          // Non-fatal error - treat as partial success and continue
-          console.warn(`[TikTok OAuth Callback] Request ${requestId}: Non-fatal scan error, treating as partial success:`, scanErr.message);
-          await updateScanJob(scanJob.id, {
-            progress: 80,
-            status: "complete",
-            error: `Partial scan completed with warnings: ${scanErr.message}`,
-          });
+          console.warn(`[TikTok OAuth Callback] Request ${requestId}: ⚠️ Scan start failed, using original job ID`);
         }
+      } catch (scanStartErr: any) {
+        console.warn(`[TikTok OAuth Callback] Request ${requestId}: ⚠️ Failed to call /api/scan/start (non-blocking):`, scanStartErr.message);
+        // Continue with redirect using original job ID
       }
-
-      // Generate media kit after metrics are stored
-      try {
-        console.log(`[TikTok OAuth Callback] Request ${requestId}: Generating media kit...`);
-        await updateScanJob(scanJob.id, { progress: 90 });
-        
-        // Fetch profile name for headline
-        const { data: profile } = await supabaseAdmin
-          .from("profiles")
-          .select("name")
-          .eq("id", userId)
-          .single();
-        
-        const profileName = profile?.name || undefined;
-        await generateAndStoreMediaKit(userId, profileName);
-        console.log(`[TikTok OAuth Callback] Request ${requestId}: Media kit generated`);
-      } catch (kitErr: any) {
-        console.warn(`⚠️ Media kit generation failed (non-blocking):`, kitErr.message);
-      }
-
-      // Update progress to 90% before final steps
-      await updateScanJob(scanJob.id, { progress: 90 });
-
-      // Build/update creator profile after scan (non-blocking - don't let this fail the whole flow)
-      try {
-        console.log(`[TikTok OAuth Callback] Request ${requestId}: Building creator profile...`);
-        await buildCreatorProfile(userId);
-        console.log(`[TikTok OAuth Callback] Request ${requestId}: Creator profile built`);
-      } catch (profileErr: any) {
-        console.warn(`⚠️ Creator profile build failed (non-blocking):`, profileErr.message);
-      }
-
-      // Clear old brand recommendations and cache for this user to prevent cross-account leakage (non-blocking)
-      try {
-        console.log(`[TikTok OAuth Callback] Request ${requestId}: Clearing old brand recommendations for user:`, userId);
-        const { error: clearError } = await supabaseAdmin
-          ?.from("brand_recommendations")
-          .delete()
-          .eq("user_id", userId)
-          .eq("status", "new"); // Only clear unsaved matches
-        
-        if (clearError) {
-          console.warn(`[TikTok OAuth Callback] Request ${requestId}: Failed to clear old recommendations (non-blocking):`, clearError);
-        } else {
-          console.log(`[TikTok OAuth Callback] Request ${requestId}: Old recommendations cleared`);
-        }
-        
-        // Also clear brand candidate cache for this user (to force fresh generation with new account data)
-        const { error: cacheClearError } = await supabaseAdmin
-          ?.from("cache_brand_candidates")
-          .delete()
-          .eq("user_id", userId);
-        
-        if (cacheClearError) {
-          console.warn(`[TikTok OAuth Callback] Request ${requestId}: Failed to clear candidate cache (non-blocking):`, cacheClearError);
-        } else {
-          console.log(`[TikTok OAuth Callback] Request ${requestId}: Candidate cache cleared for user:`, userId);
-        }
-      } catch (clearErr: any) {
-        console.warn(`[TikTok OAuth Callback] Request ${requestId}: Error clearing recommendations/cache (non-blocking):`, clearErr.message);
-      }
-
-      // CRITICAL: Mark scan job as complete BEFORE triggering brand generation
-      // This ensures the UI can redirect even if brand generation fails
-      await updateScanJob(scanJob.id, { status: "complete", progress: 100 });
-      console.log(`[TikTok OAuth Callback] Request ${requestId}: Scan job marked complete`);
-
-      // Trigger brand generation in background (non-blocking, fire-and-forget)
-      // This happens after we mark the job complete so the UI can redirect immediately
-      // Don't await - let it run in background
-      fetch(`${origin}/api/brands/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId, mode: "replace" }),
-      }).catch((err) => {
-        console.warn(`[TikTok OAuth Callback] Request ${requestId}: Failed to trigger brand generation (non-blocking):`, err);
-      });
 
       console.log(`[TikTok OAuth Callback] Request ${requestId}: Scan complete, redirecting to scanning page`);
       await logOAuthEvent('tiktok', requestId, 'redirect', 'ok', 'Redirecting to scanning page', userId);
@@ -1277,7 +1177,7 @@ try {
       }
 
       // Clear lightweight state cookie (optional correlation cookie)
-      const response = NextResponse.redirect(`${origin}/onboarding/scanning?job=${scanJob.id}`);
+      const response = NextResponse.redirect(`${origin}/onboarding/scanning?job=${finalJobId}`);
       response.cookies.delete('tiktok_oauth_state');
       // Also clear old cookie names if they exist (for migration)
       response.cookies.delete('tiktok_code_verifier');

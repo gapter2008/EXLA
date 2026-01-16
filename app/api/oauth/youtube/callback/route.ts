@@ -488,105 +488,48 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Use unified scan pipeline
-    console.log("🔍 Running unified scan pipeline...");
-    await updateScanJob(scanJob.id, { progress: 40, status: "running" });
+    // Delete the scan job we created earlier - /api/scan/start will create its own
+    try {
+      await supabaseAdmin
+        .from("scan_jobs")
+        .delete()
+        .eq("id", scanJob.id);
+    } catch (deleteErr) {
+      console.warn("⚠️ Failed to delete initial scan job (non-blocking):", deleteErr);
+    }
+
+    // Call /api/scan/start to trigger the unified scan pipeline
+    console.log("🔍 Starting scan via /api/scan/start...");
+    let finalJobId = scanJob.id; // Fallback to original job ID if call fails
     
     try {
-      await scanProviderAccount(userId, "youtube");
-      console.log("✅ Scan pipeline completed");
-      await updateScanJob(scanJob.id, { progress: 80 });
-    } catch (scanErr: any) {
-      console.error("❌ Scan pipeline failed:", scanErr.message);
-      await updateScanJob(scanJob.id, {
-        status: "failed",
-        error: `Scan failed: ${scanErr.message}`,
+      const scanStartResponse = await fetch(`${origin}/api/scan/start`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ userId }),
       });
-      return NextResponse.redirect(`${origin}/onboarding/scanning?job=${scanJob.id}&error=${encodeURIComponent(scanErr.message)}`);
-    }
 
-    // Generate media kit after metrics are stored
-    try {
-      console.log("📦 Generating media kit...");
-      await updateScanJob(scanJob.id, { progress: 90 });
-      
-      // Fetch profile name for headline
-      // DO NOT select full_name or username - columns may not exist
-      // Use 'name' field which exists in profiles table
-      const { data: profile } = await supabaseAdmin
-        .from("profiles")
-        .select("name")
-        .eq("id", userId)
-        .maybeSingle();
-      
-      const profileName = profile?.name || undefined;
-      await generateAndStoreMediaKit(userId, profileName);
-      console.log("✅ Media kit generated");
-    } catch (kitErr) {
-      console.warn("⚠️ Media kit generation failed (non-blocking):", kitErr);
-    }
-
-    // Update progress to 90% before final steps
-    await updateScanJob(scanJob.id, { progress: 90 });
-
-    // Build/update creator profile after scan (non-blocking - don't let this fail the whole flow)
-    try {
-      console.log("🔍 Building creator profile...");
-      await buildCreatorProfile(userId);
-      console.log("✅ Creator profile built");
-    } catch (profileErr) {
-      console.warn("⚠️ Creator profile build failed (non-blocking):", profileErr);
-    }
-
-    // Clear old brand recommendations and cache for this user to prevent cross-account leakage (non-blocking)
-    try {
-      console.log("🧹 Clearing old brand recommendations for user:", userId);
-      const { error: clearError } = await supabaseAdmin
-        .from("brand_recommendations")
-        .delete()
-        .eq("user_id", userId)
-        .eq("status", "new"); // Only clear unsaved matches
-      
-      if (clearError) {
-        console.warn("⚠️ Failed to clear old recommendations (non-blocking):", clearError);
+      if (scanStartResponse.ok) {
+        const scanStartData = await scanStartResponse.json();
+        if (scanStartData.ok && scanStartData.scan_job_id) {
+          finalJobId = scanStartData.scan_job_id;
+          console.log("✅ Scan started successfully, job ID:", finalJobId);
+        } else {
+          console.warn("⚠️ Scan start returned unexpected response, using original job ID");
+        }
       } else {
-        console.log("✅ Old recommendations cleared");
+        console.warn("⚠️ Scan start failed, using original job ID");
       }
-      
-      // Also clear brand candidate cache for this user (to force fresh generation with new account data)
-      const { error: cacheClearError } = await supabaseAdmin
-        .from("cache_brand_candidates")
-        .delete()
-        .eq("user_id", userId);
-      
-      if (cacheClearError) {
-        console.warn("⚠️ Failed to clear candidate cache (non-blocking):", cacheClearError);
-      } else {
-        console.log("✅ Candidate cache cleared for user:", userId);
-      }
-    } catch (clearErr) {
-      console.warn("⚠️ Error clearing recommendations/cache (non-blocking):", clearErr);
+    } catch (scanStartErr) {
+      console.warn("⚠️ Failed to call /api/scan/start (non-blocking):", scanStartErr);
+      // Continue with redirect using original job ID
     }
 
-    // CRITICAL: Mark scan job as complete BEFORE triggering brand generation
-    // This ensures the UI can redirect even if brand generation fails
-    await updateScanJob(scanJob.id, { status: "complete", progress: 100 });
-    console.log("✅ Scan job marked complete");
-
-    // Trigger brand generation in background (non-blocking, fire-and-forget)
-    // This happens after we mark the job complete so the UI can redirect immediately
-    // Don't await - let it run in background
-    fetch(`${origin}/api/brands/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userId, mode: "replace" }),
-    }).catch((err) => {
-      console.warn("⚠️ Failed to trigger brand generation (non-blocking):", err);
-    });
-
-    // ALWAYS redirect to scanning page - it will detect completion and redirect to home
+    // ALWAYS redirect to scanning page - it will poll for status and redirect when complete
     console.log("✅ Redirecting to scanning page");
-    return NextResponse.redirect(`${origin}/onboarding/scanning?job=${scanJob.id}`);
+    return NextResponse.redirect(`${origin}/onboarding/scanning?job=${finalJobId}`);
   } catch (error: any) {
     // #region agent log
     fetch('http://127.0.0.1:7242/ingest/7b86813a-4110-42bb-937a-5779b59b7bd2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/api/oauth/youtube/callback/route.ts:393',message:'Uncaught error in catch block',data:{errorMessage:error?.message,errorStack:error?.stack?.substring(0,200),errorName:error?.name},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});

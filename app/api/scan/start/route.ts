@@ -167,14 +167,17 @@ export async function POST(req: NextRequest) {
         console.log(`[Scan Start] Scan completed for user ${userId}, platform ${platform}`);
       } catch (scanError: any) {
         console.error("[Scan Start] Scan pipeline failed:", scanError);
+        const errorMessage = scanError.message || "Scan failed";
         await supabaseAdmin
           .from("scan_jobs")
           .update({
             status: "failed",
-            error: scanError.message || "Scan failed",
+            error: errorMessage,
             progress: 0,
           })
           .eq("id", scanJob.id);
+        // Log error for debugging (don't swallow errors)
+        console.error(`[Scan Start] Error stored in scan_job ${scanJob.id}:`, errorMessage);
       }
     })();
 

@@ -1295,11 +1295,16 @@ const PublicMediaKit = ({ onClose }: { onClose: () => void }) => {
             .select('platform, handle, scan_status', { count: 'exact' })
             .eq('user_id', user.id);
           
-          // Count creator metrics
+          // Count creator metrics (scan results)
           const { data: metrics, count: metricsCount } = await supabase
             .from('creator_metrics')
             .select('platform', { count: 'exact' })
             .eq('user_id', user.id);
+          
+          // Count scan results for the latest scan job (if exists)
+          // Note: creator_metrics doesn't have scan_job_id FK, so we count all metrics for user
+          // This represents the scan results stored
+          const scanResultsCount = metricsCount || 0;
           
           setDiagnostics({
             authUserId: user.id,
@@ -1309,12 +1314,14 @@ const PublicMediaKit = ({ onClose }: { onClose: () => void }) => {
               id: latestJob.id,
               status: latestJob.status,
               progress: latestJob.progress,
-              error: latestJob.error,
+              error: latestJob.error || null,
+              error_message: latestJob.error || null, // Alias for consistency
               created_at: latestJob.created_at,
             } : null,
             socialAccountsCount: accountsCount || 0,
             socialAccounts: accounts || [],
             creatorMetricsCount: metricsCount || 0,
+            scanResultsCount: scanResultsCount, // Count of scan results rows
             kitDataStatus: data.status,
             kitDataScanJobId: data.scanJobId,
           });
@@ -1638,11 +1645,28 @@ const PublicMediaKit = ({ onClose }: { onClose: () => void }) => {
             </div>
           ) : kitData?.status === 'missing' ? (
             <div className="py-8 text-center space-y-4">
-              {scanJobError ? (
+              {/* Check if there's an active scan job - if so, redirect to scanning */}
+              {diagnostics?.latestScanJob && 
+               (diagnostics.latestScanJob.status === 'queued' || diagnostics.latestScanJob.status === 'running') ? (
+                <div className="space-y-4">
+                  <Loader2 className="animate-spin text-indigo-600 mx-auto" size={32} />
+                  <p className="text-sm text-gray-600">Scan in progress...</p>
+                  <Button
+                    onClick={() => {
+                      if (diagnostics.latestScanJob?.id) {
+                        goOnboardingPush(router, 'scanning', `job=${diagnostics.latestScanJob.id}`);
+                      }
+                    }}
+                    variant="secondary"
+                  >
+                    View Progress
+                  </Button>
+                </div>
+              ) : scanJobError || (diagnostics?.latestScanJob && diagnostics.latestScanJob.status === 'failed') ? (
                 <>
                   <div className="p-4 bg-red-50 border border-red-200 rounded-lg mb-4">
                     <p className="text-sm font-semibold text-red-900 mb-1">Scan Failed</p>
-                    <p className="text-xs text-red-700">{scanJobError}</p>
+                    <p className="text-xs text-red-700">{scanJobError || diagnostics?.latestScanJob?.error || 'Unknown error'}</p>
                   </div>
                   <Button 
                     onClick={handleStartScan} 
@@ -1684,32 +1708,45 @@ const PublicMediaKit = ({ onClose }: { onClose: () => void }) => {
                 <div className="mt-8 p-4 bg-gray-50 border border-gray-200 rounded-lg text-left">
                   <p className="text-xs font-semibold text-gray-900 mb-3">🔍 Diagnostics (Dev Only)</p>
                   <div className="space-y-2 text-xs font-mono">
-                    <div><span className="text-gray-600">Auth User ID:</span> <span className="text-gray-900">{diagnostics.authUserId}</span></div>
+                    <div><span className="text-gray-600">User ID:</span> <span className="text-gray-900">{diagnostics.authUserId}</span></div>
                     <div><span className="text-gray-600">Profile exists:</span> <span className={diagnostics.profileExists ? 'text-green-600' : 'text-red-600'}>{diagnostics.profileExists ? 'Yes' : 'No'}</span></div>
                     {diagnostics.latestScanJob ? (
                       <>
-                        <div><span className="text-gray-600">Latest scan job:</span> <span className="text-gray-900">{diagnostics.latestScanJob.id}</span></div>
-                        <div><span className="text-gray-600">Status:</span> <span className="text-gray-900">{diagnostics.latestScanJob.status}</span></div>
-                        <div><span className="text-gray-600">Progress:</span> <span className="text-gray-900">{diagnostics.latestScanJob.progress}%</span></div>
-                        <div><span className="text-gray-600">Created:</span> <span className="text-gray-900">{new Date(diagnostics.latestScanJob.created_at).toLocaleString()}</span></div>
-                        {diagnostics.latestScanJob.error && (
-                          <div><span className="text-gray-600">Error:</span> <span className="text-red-600">{diagnostics.latestScanJob.error}</span></div>
-                        )}
+                        <div className="pt-2 border-t border-gray-200">
+                          <div className="font-semibold text-gray-900 mb-1">Latest Scan Job:</div>
+                          <div className="ml-2 space-y-1">
+                            <div><span className="text-gray-600">ID:</span> <span className="text-gray-900">{diagnostics.latestScanJob.id}</span></div>
+                            <div><span className="text-gray-600">Status:</span> <span className={`font-semibold ${diagnostics.latestScanJob.status === 'complete' ? 'text-green-600' : diagnostics.latestScanJob.status === 'failed' ? 'text-red-600' : 'text-yellow-600'}`}>{diagnostics.latestScanJob.status}</span></div>
+                            <div><span className="text-gray-600">Progress:</span> <span className="text-gray-900">{diagnostics.latestScanJob.progress}%</span></div>
+                            <div><span className="text-gray-600">Created:</span> <span className="text-gray-900">{new Date(diagnostics.latestScanJob.created_at).toLocaleString()}</span></div>
+                            {diagnostics.latestScanJob.error && (
+                              <div><span className="text-gray-600">Error message:</span> <span className="text-red-600 break-words">{diagnostics.latestScanJob.error}</span></div>
+                            )}
+                          </div>
+                        </div>
+                        <div><span className="text-gray-600">Scan results count:</span> <span className="text-gray-900">{diagnostics.scanResultsCount || 0}</span> <span className="text-gray-500">(creator_metrics rows)</span></div>
                       </>
                     ) : (
-                      <div><span className="text-red-600">No scan job found</span></div>
+                      <div className="pt-2 border-t border-gray-200"><span className="text-red-600">No scan job found</span></div>
                     )}
-                    <div><span className="text-gray-600">Social accounts:</span> <span className="text-gray-900">{diagnostics.socialAccountsCount}</span></div>
-                    {diagnostics.socialAccounts && diagnostics.socialAccounts.length > 0 && (
-                      <div className="ml-4">
-                        {diagnostics.socialAccounts.map((acc: any, i: number) => (
-                          <div key={i} className="text-gray-700">
-                            - {acc.platform} (@{acc.handle || 'N/A'}) - {acc.scan_status || 'N/A'}
+                    <div className="pt-2 border-t border-gray-200">
+                      <div className="font-semibold text-gray-900 mb-1">Social Accounts:</div>
+                      <div className="ml-2">
+                        <div><span className="text-gray-600">Count:</span> <span className="text-gray-900">{diagnostics.socialAccountsCount || 0}</span></div>
+                        {diagnostics.socialAccounts && diagnostics.socialAccounts.length > 0 ? (
+                          <div className="ml-2 mt-1">
+                            {diagnostics.socialAccounts.map((acc: any, i: number) => (
+                              <div key={i} className="text-gray-700">
+                                - {acc.platform} (@{acc.handle || 'N/A'}) - {acc.scan_status || 'N/A'}
+                              </div>
+                            ))}
                           </div>
-                        ))}
+                        ) : (
+                          <div className="ml-2 text-gray-500">None</div>
+                        )}
                       </div>
-                    )}
-                    <div><span className="text-gray-600">Creator metrics:</span> <span className="text-gray-900">{diagnostics.creatorMetricsCount}</span></div>
+                    </div>
+                    <div><span className="text-gray-600">Creator metrics count:</span> <span className="text-gray-900">{diagnostics.creatorMetricsCount || 0}</span></div>
                     <div><span className="text-gray-600">Kit data status:</span> <span className="text-gray-900">{diagnostics.kitDataStatus}</span></div>
                     {diagnostics.kitDataScanJobId && (
                       <div><span className="text-gray-600">Kit scan job ID:</span> <span className="text-gray-900">{diagnostics.kitDataScanJobId}</span></div>

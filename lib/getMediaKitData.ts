@@ -62,7 +62,9 @@ export async function getMediaKitData(userId: string): Promise<MediaKitData> {
     .limit(1)
     .maybeSingle();
 
+  // CRITICAL: Check for active scan jobs FIRST
   // If scan job exists and is active (queued/running), return scanning state
+  // NEVER show "missing" if there's an active scan job
   if (latestScanJob && (latestScanJob.status === "queued" || latestScanJob.status === "running")) {
     return {
       profile: { 
@@ -188,8 +190,14 @@ export async function getMediaKitData(userId: string): Promise<MediaKitData> {
     };
   }
 
-  // Only return "missing" if NO scan job exists at all AND no data exists
-  if (!latestScanJob && !hasAnyData) {
+  // Only return "missing" if:
+  // 1. NO scan job exists at all AND no data exists, OR
+  // 2. Latest scan job is failed AND no data exists
+  // NEVER show "missing" if there's a complete scan job (even if data queries failed)
+  const shouldShowMissing = (!latestScanJob && !hasAnyData) || 
+                            (scanJobFailed && !hasAnyData);
+  
+  if (shouldShowMissing) {
     return {
       profile: {
         name: profile?.name || null,
@@ -203,6 +211,7 @@ export async function getMediaKitData(userId: string): Promise<MediaKitData> {
       topContent: [],
       suggestedRateRange: { min: 0, max: 0, currency: "USD" },
       status: "missing",
+      scanJobId: scanJobFailed ? latestScanJob?.id : undefined,
     };
   }
 
