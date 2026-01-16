@@ -60,7 +60,7 @@ export async function POST(req: NextRequest) {
     const brand = pitch.brand_name ?? "Brand";
     const channel = pitch.channel ?? "email";
     const subject = pitch.subject ?? "";
-    const body = pitch.body ?? "";
+    const pitchBody = pitch.body ?? "";
 
     // Fetch creator metrics for context
     const { data: metrics } = await supabaseAdmin
@@ -78,7 +78,7 @@ Original pitch:
 Brand: ${brand}
 Channel: ${channel}
 ${subject ? `Subject: ${subject}` : ''}
-Body: ${body}
+Body: ${pitchBody}
 
 Creator stats:
 ${metrics ? `- Followers: ${metrics.followers?.toLocaleString() || 0}
