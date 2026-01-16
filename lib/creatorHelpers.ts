@@ -105,7 +105,7 @@ export async function getCreatorProfile(
 
   const { data, error } = await supabase
     .from("creators")
-    .select("id, user_id, niche, created_at, updated_at")
+    .select("id, user_id, niche, platforms, audience_size, created_at, updated_at")
     .eq("user_id", userId)
     .single();
 
@@ -118,7 +118,17 @@ export async function getCreatorProfile(
     return null;
   }
 
-  return data as CreatorProfile;
+  // Construct CreatorProfile with all required fields
+  const creatorProfile: CreatorProfile = {
+    id: data.id,
+    user_id: data.user_id,
+    niche: data.niche ?? null,
+    platforms: data.platforms ?? null,
+    audience_size: data.audience_size ? Number(data.audience_size) : null,
+    created_at: data.created_at ?? new Date().toISOString(),
+  };
+
+  return creatorProfile;
 }
 
 /**
