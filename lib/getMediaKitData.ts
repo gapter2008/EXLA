@@ -91,6 +91,12 @@ export async function getMediaKitData(userId: string): Promise<MediaKitData> {
     .eq("user_id", userId)
     .maybeSingle();
 
+  // Check if scan job is complete (needed for fallback logic below)
+  const scanJobComplete = latestScanJob && 
+                          (latestScanJob.status === "complete" || 
+                           latestScanJob.status === "scanned" || 
+                           latestScanJob.status === "scanned_partial");
+
   // Fetch social accounts (platform info, handles, stats)
   // First try with scan_status filter, then fallback to all accounts if scan job is complete
   let { data: socialAccounts, error: accountsError } = await supabaseAdmin
@@ -135,10 +141,7 @@ export async function getMediaKitData(userId: string): Promise<MediaKitData> {
   // 2. Social accounts with scanned status exist
   // 3. Creator metrics exist
   // 4. Media kit exists
-  const scanJobComplete = latestScanJob && 
-                          (latestScanJob.status === "complete" || 
-                           latestScanJob.status === "scanned" || 
-                           latestScanJob.status === "scanned_partial");
+  // Note: scanJobComplete is already declared above (after fetching creator profile)
   
   // Debug logging in development
   if (process.env.NODE_ENV === 'development') {
