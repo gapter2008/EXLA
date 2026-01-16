@@ -6,6 +6,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { useOnboarding } from '@/context/OnboardingContext';
 import { OnboardingPageGuard } from '@/components/OnboardingPageGuard';
 import { supabase } from '@/lib/supabaseClient';
+import { goOnboardingPush } from '@/lib/safeNavigate';
 
 export default function OnboardingProfilePage() {
   const router = useRouter();
