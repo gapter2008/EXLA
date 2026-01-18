@@ -123,24 +123,25 @@ export async function POST(req: NextRequest) {
     }
 
     // Start scan pipeline asynchronously (don't await)
+    // CRITICAL: Status MUST move: queued -> running -> complete OR failed
     (async () => {
       try {
-        // Update job status to running
+        // Step 1: Update status to running (progress 10%)
         await supabaseAdmin
           .from("scan_jobs")
-          .update({ status: "running", progress: 20 })
+          .update({ status: "running", progress: 10 })
           .eq("id", scanJob.id);
 
-        // Run scan pipeline
+        // Step 2: Run scan pipeline (this fetches profile and stats)
         await scanProviderAccount(userId, platform as "youtube" | "tiktok");
 
-        // Update progress
+        // Step 3: Update progress to 70% after scan pipeline
         await supabaseAdmin
           .from("scan_jobs")
-          .update({ progress: 80 })
+          .update({ progress: 70 })
           .eq("id", scanJob.id);
 
-        // Generate media kit
+        // Step 4: Generate media kit
         const { data: profile } = await supabaseAdmin
           .from("profiles")
           .select("name")
@@ -150,7 +151,7 @@ export async function POST(req: NextRequest) {
         const profileName = profile?.name || undefined;
         await generateAndStoreMediaKit(userId, profileName);
 
-        // Build creator profile (non-blocking - don't fail scan if this fails)
+        // Step 5: Build creator profile (non-blocking - don't fail scan if this fails)
         try {
           await buildCreatorProfile(userId);
         } catch (profileErr: any) {
@@ -158,7 +159,7 @@ export async function POST(req: NextRequest) {
           // Continue - scan can complete without creator profile
         }
 
-        // Mark job as complete
+        // Step 6: Mark job as complete (status MUST be complete)
         await supabaseAdmin
           .from("scan_jobs")
           .update({ status: "complete", progress: 100 })
@@ -166,18 +167,37 @@ export async function POST(req: NextRequest) {
 
         console.log(`[Scan Start] Scan completed for user ${userId}, platform ${platform}`);
       } catch (scanError: any) {
+        // CRITICAL: On ANY error, status MUST be set to failed
         console.error("[Scan Start] Scan pipeline failed:", scanError);
-        const errorMessage = scanError.message || "Scan failed";
-        await supabaseAdmin
-          .from("scan_jobs")
-          .update({
-            status: "failed",
-            error: errorMessage,
-            progress: 0,
-          })
-          .eq("id", scanJob.id);
-        // Log error for debugging (don't swallow errors)
+        
+        // Truncate error message to reasonable length (for database storage)
+        const errorMessage = (scanError.message || "Scan failed").substring(0, 500);
+        
+        // Log full error stack in development
+        if (process.env.NODE_ENV === 'development') {
+          console.error("[Scan Start] Full error stack:", scanError.stack);
+        }
+        
+        // Update status to failed - MUST happen even if this update fails
+        try {
+          await supabaseAdmin
+            .from("scan_jobs")
+            .update({
+              status: "failed",
+              error: errorMessage,
+              progress: 0,
+            })
+            .eq("id", scanJob.id);
+        } catch (updateErr: any) {
+          // If update fails, log but don't throw (we're already in catch block)
+          console.error(`[Scan Start] CRITICAL: Failed to update scan_jobs status to failed:`, updateErr);
+        }
+        
+        // Log error for debugging (don't swallow errors - re-throw would cause unhandled rejection)
         console.error(`[Scan Start] Error stored in scan_job ${scanJob.id}:`, errorMessage);
+        
+        // Note: We don't re-throw here because this is an async IIFE and we don't want
+        // to cause unhandled promise rejection. The error has been stored in scan_jobs.
       }
     })();
 

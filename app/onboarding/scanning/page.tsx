@@ -46,6 +46,8 @@ function ScanningPageContent() {
   const [status, setStatus] = useState<"queued" | "running" | "complete" | "failed" | "scanned_partial">("queued");
   const [error, setError] = useState<string | null>(errorParam);
   const [statusMessageIndex, setStatusMessageIndex] = useState(0);
+  const [startTime, setStartTime] = useState<number | null>(null);
+  const [isTimedOut, setIsTimedOut] = useState(false);
 
   // Start animation immediately on load
   useEffect(() => {
@@ -101,9 +103,13 @@ function ScanningPageContent() {
       return;
     }
 
+    // Record start time for timeout detection
+    setStartTime(Date.now());
+    setIsTimedOut(false);
+
     // Start polling immediately
 
-    // Poll scan status every 1.5 seconds
+    // Poll scan status every 1.5 seconds (as requested)
     const pollInterval = setInterval(async () => {
       try {
         const userId = user.id;
@@ -122,9 +128,27 @@ function ScanningPageContent() {
         }
 
         const data = await response.json();
-        setProgress(data.progress || 0);
-        setStatus(data.status);
+        
+        // Update progress - use real progress from scan_jobs, or 0 if not available
+        const realProgress = typeof data.progress === 'number' ? data.progress : 0;
+        setProgress(realProgress);
+        
+        // Update status - MUST come from scan_jobs
+        const realStatus = data.status || "queued";
+        setStatus(realStatus);
         setError(data.error || null);
+
+        // Check for timeout: if status has been "running" for > 60s, show timeout UI
+        if (realStatus === "running" && startTime) {
+          const elapsedSeconds = (Date.now() - startTime) / 1000;
+          if (elapsedSeconds > 60) {
+            setIsTimedOut(true);
+            // Don't clear interval - keep polling in case it completes
+          }
+        } else if (realStatus !== "running") {
+          // Reset timeout if status changed from running
+          setIsTimedOut(false);
+        }
 
         if (data.status === "complete" || data.status === "scanned_partial") {
           clearInterval(pollInterval);
@@ -170,7 +194,9 @@ function ScanningPageContent() {
             router.replace("/");
           }, 1000);
         } else if (data.status === "failed") {
+          // Status is failed - stop polling and show error
           clearInterval(pollInterval);
+          setIsTimedOut(false);
         }
       } catch (err: any) {
         console.error("Polling error:", err);
@@ -178,7 +204,7 @@ function ScanningPageContent() {
         setStatus("failed");
         clearInterval(pollInterval);
       }
-    }, 1000);
+    }, 1500); // Poll every 1.5 seconds as requested
 
     return () => {
       clearInterval(pollInterval);
@@ -238,7 +264,8 @@ function ScanningPageContent() {
           {status === "failed" ? (
             <div className="space-y-4">
               <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
-                <p className="text-sm text-red-700">
+                <p className="text-sm font-semibold text-red-900 mb-1">Scan Failed</p>
+                <p className="text-xs text-red-700">
                   {error || "Something went wrong during the scan"}
                 </p>
               </div>
@@ -246,19 +273,39 @@ function ScanningPageContent() {
                 Try Again
               </Button>
             </div>
+          ) : isTimedOut && status === "running" ? (
+            <div className="space-y-4">
+              <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                <p className="text-sm font-semibold text-yellow-900 mb-1">Still working...</p>
+                <p className="text-xs text-yellow-700">
+                  The scan is taking longer than expected. It may still be processing in the background.
+                </p>
+              </div>
+              <Button onClick={handleTryAgain} variant="secondary" fullWidth>
+                Try Again
+              </Button>
+            </div>
           ) : (
             <div className="space-y-6">
-              {/* Progress bar */}
+              {/* Progress bar - show real progress if available, otherwise indeterminate */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-gray-600">{statusMessages[statusMessageIndex]}...</span>
-                  <span className="font-medium text-gray-900">{progress}%</span>
+                  {progress > 0 ? (
+                    <span className="font-medium text-gray-900">{progress}%</span>
+                  ) : (
+                    <span className="font-medium text-gray-500">—</span>
+                  )}
                 </div>
                 <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
-                  <div
-                    className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-300"
-                    style={{ width: `${progress}%` }}
-                  />
+                  {progress > 0 ? (
+                    <div
+                      className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-300"
+                      style={{ width: `${progress}%` }}
+                    />
+                  ) : (
+                    <div className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 animate-pulse" style={{ width: '60%' }} />
+                  )}
                 </div>
               </div>
 
