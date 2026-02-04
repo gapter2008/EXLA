@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { generateAndStoreMediaKit } from "@/lib/mediaKitHelpers";
 import { buildCreatorProfile } from "@/lib/profileBuilder";
 import { scanProviderAccount } from "@/lib/scanProviderAccount";
+import { getYoutubeThumbnailUrl } from "@/lib/youtubeThumbnail";
 
 export const runtime = "nodejs";
 export const dynamic = 'force-dynamic'; // Prevent Next.js caching of user-specific data
@@ -159,6 +160,7 @@ function calculateMetrics(videos: any[]) {
     const engagement = views > 0 ? ((likes + comments) / views) * 100 : 0;
     totalEngagement += engagement;
 
+    const thumbnail_url = getYoutubeThumbnailUrl(video.snippet?.thumbnails) ?? undefined;
     topVideos.push({
       title: video.snippet?.title || "Untitled",
       url: `https://www.youtube.com/watch?v=${video.id}`,
@@ -167,6 +169,7 @@ function calculateMetrics(videos: any[]) {
       comments: comments,
       publishedAt: video.snippet?.publishedAt || null,
       description: video.snippet?.description || null, // Include description for topic extraction
+      thumbnail_url,
     });
   }
 
@@ -236,7 +239,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.redirect(`${origin}/onboarding/scanning?error=Invalid state`);
     }
 
-    // Validate environment variables
+    // Validate environment variables (must match Google Cloud Console exactly)
     const clientId = process.env.YOUTUBE_CLIENT_ID;
     const clientSecret = process.env.YOUTUBE_CLIENT_SECRET;
     let redirectUri = process.env.YOUTUBE_REDIRECT_URI?.trim();
@@ -248,10 +251,12 @@ export async function GET(req: NextRequest) {
         redirectUri = getOAuthRedirectUri('/api/oauth/youtube/callback', req);
       } catch (error: any) {
         console.error("Could not determine YouTube redirect URI:", error);
-        // Fallback to localhost for development only
+        // Fallback to localhost for development only (must match Authorized Redirect URI in Google Console)
         redirectUri = "http://localhost:3000/api/oauth/youtube/callback";
       }
     }
+    // Google requires exact match: no trailing slash
+    redirectUri = redirectUri.replace(/\/$/, "");
 
     console.log("🔍 Env check:", {
       hasClientId: !!clientId,
@@ -488,48 +493,59 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Delete the scan job we created earlier - /api/scan/start will create its own
-    try {
-      await supabaseAdmin
-        .from("scan_jobs")
-        .delete()
-        .eq("id", scanJob.id);
-    } catch (deleteErr) {
-      console.warn("⚠️ Failed to delete initial scan job (non-blocking):", deleteErr);
-    }
-
-    // Call /api/scan/start to trigger the unified scan pipeline
+    // Call /api/scan/start first. Only delete our placeholder job after we have a valid job to redirect to.
     console.log("🔍 Starting scan via /api/scan/start...");
-    let finalJobId = scanJob.id; // Fallback to original job ID if call fails
-    
+    let finalJobId: string = scanJob.id;
+    let scanStartError: string | null = null;
+
     try {
       const scanStartResponse = await fetch(`${origin}/api/scan/start`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ userId }),
+        body: JSON.stringify({ userId, fromOAuth: true }),
       });
 
-      if (scanStartResponse.ok) {
-        const scanStartData = await scanStartResponse.json();
-        if (scanStartData.ok && scanStartData.scan_job_id) {
-          finalJobId = scanStartData.scan_job_id;
-          console.log("✅ Scan started successfully, job ID:", finalJobId);
-        } else {
-          console.warn("⚠️ Scan start returned unexpected response, using original job ID");
+      const scanStartData = scanStartResponse.ok
+        ? await scanStartResponse.json().catch(() => ({}))
+        : { error: (await scanStartResponse.json().catch(() => ({}))).error || "Scan failed to start" };
+
+      const pipelineSucceeded = scanStartResponse.ok && scanStartData.ok && scanStartData.status === "complete" && scanStartData.scan_job_id;
+      if (scanStartData.scan_job_id) {
+        finalJobId = scanStartData.scan_job_id; // Use scan/start job (completed or failed)
+      }
+      if (pipelineSucceeded) {
+        console.log("✅ Scan completed successfully, job ID:", finalJobId);
+        try {
+          await supabaseAdmin.from("scan_jobs").delete().eq("id", scanJob.id);
+        } catch {
+          // Ignore
         }
       } else {
-        console.warn("⚠️ Scan start failed, using original job ID");
+        scanStartError = scanStartData.error || "Scan failed to start";
+        console.warn("⚠️ Scan failed:", scanStartError);
+        // Job in scan/start is already marked failed; only update placeholder if we never got a job back
+        if (!scanStartData.scan_job_id) {
+          await updateScanJob(scanJob.id, { status: "failed", error: scanStartError ?? "Scan failed to start", progress: 0 });
+        }
       }
-    } catch (scanStartErr) {
-      console.warn("⚠️ Failed to call /api/scan/start (non-blocking):", scanStartErr);
-      // Continue with redirect using original job ID
+    } catch (scanStartErr: any) {
+      scanStartError = scanStartErr?.message || "Failed to start scan";
+      console.warn("⚠️ Failed to call /api/scan/start:", scanStartErr);
+      await updateScanJob(scanJob.id, {
+        status: "failed",
+        error: scanStartError ?? "Failed to start scan",
+        progress: 0,
+      });
     }
 
-    // ALWAYS redirect to scanning page - it will poll for status and redirect when complete
+    // Redirect to scanning page with a job that exists (ours or the new one)
+    const redirectUrl = scanStartError
+      ? `${origin}/onboarding/scanning?job=${scanJob.id}&error=${encodeURIComponent(scanStartError)}`
+      : `${origin}/onboarding/scanning?job=${finalJobId}`;
     console.log("✅ Redirecting to scanning page");
-    return NextResponse.redirect(`${origin}/onboarding/scanning?job=${finalJobId}`);
+    return NextResponse.redirect(redirectUrl);
   } catch (error: any) {
     // #region agent log
     fetch('http://127.0.0.1:7242/ingest/7b86813a-4110-42bb-937a-5779b59b7bd2',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'app/api/oauth/youtube/callback/route.ts:393',message:'Uncaught error in catch block',data:{errorMessage:error?.message,errorStack:error?.stack?.substring(0,200),errorName:error?.name},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});

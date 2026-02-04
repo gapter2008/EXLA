@@ -154,10 +154,10 @@ export async function getBrandContacts(brandId: string): Promise<BrandContactInf
     return null;
   }
 
-  // Get contact info
+  // Get contact info (columns must match brand_contacts table: email, website_url, etc.)
   const { data: contact, error } = await supabaseAdmin
     .from('brand_contacts')
-    .select('id, brand_id, contact_name, contact_email, contact_phone, contact_role, created_at, updated_at')
+    .select('id, brand_id, website_url, contact_page_url, email, instagram_url, tiktok_url, linkedin_url, enrichment_status, error, confidence, last_enriched_at')
     .eq('brand_id', brandId)
     .single();
 
@@ -187,12 +187,11 @@ export async function getBrandContacts(brandId: string): Promise<BrandContactInf
     return null;
   }
 
-  // Contact exists, so enrichment is complete
-  // enrichment_status is not a column in brand_contacts table - it's a computed field
-  // If contact exists, enrichment was successful
+  // Contact exists; map partial -> complete for interface
+  const status = contact.enrichment_status === 'partial' ? 'complete' : contact.enrichment_status;
   return {
     ...contact,
-    enrichment_status: 'complete' as const,
+    enrichment_status: (status === 'pending' || status === 'complete' || status === 'failed' ? status : 'complete') as 'pending' | 'complete' | 'failed',
   };
 }
 

@@ -1119,44 +1119,55 @@ try {
         }
       }
 
-      // Delete the scan job we created earlier - /api/scan/start will create its own
-      try {
-        await supabaseAdmin
-          .from("scan_jobs")
-          .delete()
-          .eq("id", scanJob.id);
-      } catch (deleteErr) {
-        console.warn(`[TikTok OAuth Callback] Request ${requestId}: Failed to delete initial scan job (non-blocking):`, deleteErr);
-      }
-
-      // Call /api/scan/start to trigger the unified scan pipeline
+      // Call /api/scan/start first. Only delete our placeholder job after we have a valid job to redirect to.
       console.log(`[TikTok OAuth Callback] Request ${requestId}: Starting scan via /api/scan/start...`);
-      let finalJobId = scanJob.id; // Fallback to original job ID if call fails
-      
+      let finalJobId: string = scanJob.id;
+      let scanStartError: string | null = null;
+
       try {
         const scanStartResponse = await fetch(`${origin}/api/scan/start`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ userId }),
+          body: JSON.stringify({ userId, fromOAuth: true }),
         });
 
-        if (scanStartResponse.ok) {
-          const scanStartData = await scanStartResponse.json();
-          if (scanStartData.ok && scanStartData.scan_job_id) {
-            finalJobId = scanStartData.scan_job_id;
-            console.log(`[TikTok OAuth Callback] Request ${requestId}: ✅ Scan started successfully, job ID:`, finalJobId);
-          } else {
-            console.warn(`[TikTok OAuth Callback] Request ${requestId}: ⚠️ Scan start returned unexpected response, using original job ID`);
+        const scanStartData = scanStartResponse.ok
+          ? await scanStartResponse.json().catch(() => ({}))
+          : { error: (await scanStartResponse.json().catch(() => ({}))).error || "Scan failed to start" };
+
+        const pipelineSucceeded = scanStartResponse.ok && scanStartData.ok && scanStartData.status === "complete" && scanStartData.scan_job_id;
+        if (scanStartData.scan_job_id) {
+          finalJobId = scanStartData.scan_job_id;
+        }
+        if (pipelineSucceeded) {
+          console.log(`[TikTok OAuth Callback] Request ${requestId}: ✅ Scan completed successfully, job ID:`, finalJobId);
+          try {
+            await supabaseAdmin.from("scan_jobs").delete().eq("id", scanJob.id);
+          } catch {
+            // Ignore
           }
         } else {
-          console.warn(`[TikTok OAuth Callback] Request ${requestId}: ⚠️ Scan start failed, using original job ID`);
+          scanStartError = scanStartData.error || "Scan failed to start";
+          console.warn(`[TikTok OAuth Callback] Request ${requestId}: ⚠️ Scan failed:`, scanStartError);
+          if (!scanStartData.scan_job_id) {
+            await updateScanJob(scanJob.id, { status: "failed", error: scanStartError ?? "Scan failed to start", progress: 0 });
+          }
         }
       } catch (scanStartErr: any) {
-        console.warn(`[TikTok OAuth Callback] Request ${requestId}: ⚠️ Failed to call /api/scan/start (non-blocking):`, scanStartErr.message);
-        // Continue with redirect using original job ID
+        scanStartError = scanStartErr?.message || "Failed to start scan";
+        console.warn(`[TikTok OAuth Callback] Request ${requestId}: ⚠️ Failed to call /api/scan/start:`, scanStartErr?.message);
+        await updateScanJob(scanJob.id, {
+          status: "failed",
+          error: scanStartError ?? "Failed to start scan",
+          progress: 0,
+        });
       }
+
+      const redirectUrl = scanStartError
+        ? `${origin}/onboarding/scanning?job=${scanJob.id}&error=${encodeURIComponent(scanStartError)}`
+        : `${origin}/onboarding/scanning?job=${finalJobId}`;
 
       console.log(`[TikTok OAuth Callback] Request ${requestId}: Scan complete, redirecting to scanning page`);
       await logOAuthEvent('tiktok', requestId, 'redirect', 'ok', 'Redirecting to scanning page', userId);
@@ -1177,7 +1188,7 @@ try {
       }
 
       // Clear lightweight state cookie (optional correlation cookie)
-      const response = NextResponse.redirect(`${origin}/onboarding/scanning?job=${finalJobId}`);
+      const response = NextResponse.redirect(redirectUrl);
       response.cookies.delete('tiktok_oauth_state');
       // Also clear old cookie names if they exist (for migration)
       response.cookies.delete('tiktok_code_verifier');

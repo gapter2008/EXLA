@@ -4,6 +4,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { goOnboarding } from "@/lib/safeNavigate";
+import { Page } from "@/components/layout/Page";
+import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -75,34 +78,46 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="h-full flex flex-col overflow-hidden">
-      <div className="flex-1 flex items-center justify-center overflow-hidden">
-        <div className="w-full max-w-sm px-6 pb-28">
-          <h1 className="text-xl font-semibold mb-6 text-center">Login</h1>
+    <div className="min-h-screen bg-white flex flex-col items-center justify-between px-6 py-20">
+      <div className="flex-1 flex flex-col items-center justify-center w-full">
+        <div className="w-full max-w-sm space-y-6">
           <form onSubmit={handleLogin} className="space-y-4">
-            <input 
-              className="w-full border border-gray-300 rounded-lg px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-black focus:border-transparent" 
-              type="email" 
-              placeholder="Email" 
-              value={email} 
-              onChange={(e)=>setEmail(e.target.value)} 
-            />
-            <input 
-              className="w-full border border-gray-300 rounded-lg px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-black focus:border-transparent" 
-              type="password" 
-              placeholder="Password" 
-              value={password} 
-              onChange={(e)=>setPassword(e.target.value)} 
-            />
-            {error && <p className="text-red-600 text-sm">{error}</p>}
-            <button 
+            <Input
+              type="email"
+              placeholder="Email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
               disabled={isLoading}
-              className="px-4 py-3 rounded-lg bg-black text-white w-full font-medium hover:bg-gray-900 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            />
+            <Input
+              type="password"
+              placeholder="Password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              disabled={isLoading}
+            />
+            {error && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
+                <p className="text-red-600 text-sm">{error}</p>
+              </div>
+            )}
+            <Button
+              type="submit"
+              variant="primary"
+              className="w-full"
+              isLoading={isLoading}
+              disabled={isLoading}
             >
-              {isLoading ? 'Loading...' : 'Login'}
-            </button>
+              Sign In
+            </Button>
           </form>
-          <p className="text-sm text-gray-600 mt-4 text-center">No account? <Link className="underline text-black font-medium" href="/onboarding/welcome">Sign up</Link></p>
+
+          <p className="text-[15px] text-[#64748B] text-center">
+            No account?{" "}
+            <Link className="text-[#0F172A] font-semibold hover:underline" href="/auth/email-signup">
+              Create Account
+            </Link>
+          </p>
         </div>
       </div>
     </div>

@@ -68,7 +68,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.redirect(new URL("/auth/login?redirect=/api/oauth/youtube/start", req.url));
     }
 
-    // Validate environment variables
+    // Validate environment variables (must match Google Cloud Console exactly)
     const clientId = process.env.YOUTUBE_CLIENT_ID;
     let redirectUri = process.env.YOUTUBE_REDIRECT_URI?.trim();
     
@@ -78,10 +78,12 @@ export async function GET(req: NextRequest) {
         redirectUri = getOAuthRedirectUri('/api/oauth/youtube/callback', req);
       } catch (error: any) {
         console.error("Could not determine YouTube redirect URI:", error);
-        // Fallback to localhost for development only
+        // Fallback to localhost for development only (must match Authorized Redirect URI in Google Console)
         redirectUri = "http://localhost:3000/api/oauth/youtube/callback";
       }
     }
+    // Google requires exact match: no trailing slash
+    redirectUri = redirectUri.replace(/\/$/, "");
 
     // Debug logging
     if (process.env.NODE_ENV === 'development') {

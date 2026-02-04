@@ -3,23 +3,35 @@
 import React, { useState, useEffect, useRef, createContext, useContext, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
-import { Home, Search, MessageSquare, FileText, User, Users, ChevronRight, Check, Loader2, Instagram, Youtube, X, Sparkles, TrendingUp, Zap, Clock, Target, Award, Bell, Copy, CheckCircle2, Eye, MessageCircle, DollarSign, ArrowRight, ChevronDown, Trash2, Send, Settings, Moon, Sun, Monitor, ChevronLeft, Mail, ExternalLink, Linkedin, Edit2 } from 'lucide-react';
+import { Home, Search, MessageSquare, FileText, User, Users, ChevronRight, Check, Loader2, Instagram, Youtube, X, Sparkles, TrendingUp, Zap, Clock, Target, Award, Bell, Copy, CheckCircle2, Eye, MessageCircle, DollarSign, ArrowRight, ChevronDown, Trash2, Send, Settings, Moon, Sun, Monitor, ChevronLeft, Mail, ExternalLink, Linkedin, Edit2, Share2, Play, Building2, Bot, Calculator, Briefcase, LogOut, User2, Shield } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { ensureProfile, getProfile, getCreatorProfile, createCreatorProfile } from '../lib/creatorHelpers';
 import type { Profile, CreatorProfile } from '../lib/creatorHelpers';
 import { inferNiche } from '../lib/inferNiche';
 import { useOnboarding } from '../context/OnboardingContext';
-import { getMediaKitData, type MediaKitData } from '../lib/getMediaKitData';
+import type { MediaKitData } from '../lib/getMediaKitData';
+import { sanitizeChatMessage } from '../lib/chatMessageSanitizer';
 import { StickyFooterCTA } from '../components/StickyFooterCTA';
 import { PageContainer } from '../components/PageContainer';
 import { goOnboardingPush } from '../lib/safeNavigate';
+import { SectionLabel, ListRow } from '../components/ui';
 
 // Global User Data Store Context
+interface CreatorAiProfileRow {
+  headline: string | null;
+  bio: string | null;
+  niches: string[];
+  themes: string[];
+  brand_fit: Array<{ category: string; reasoning?: string }>;
+  suggested_collab_types: string[];
+  updated_at: string | null;
+}
 interface UserDataStore {
   // Data
   socialAccounts: Array<{ platform: string; handle: string | null; created_at: string }> | null;
   creatorMetrics: Array<{ platform: string; followers: number; avg_views_10: number; engagement_rate_10: number; total_views: number; top_videos?: any }> | null;
   creatorProfile: { size_tier: string; primary_topics?: string[]; keywords?: string[]; summary?: string } | null;
+  creatorAiProfile: CreatorAiProfileRow | null;
   brandRecommendations: any[] | null;
   brandRecommendationsCount: number;
   pitches: any[] | null;
@@ -164,6 +176,7 @@ const UserDataProvider = ({ children, userId }: { children: React.ReactNode; use
   const [socialAccounts, setSocialAccounts] = useState<Array<{ platform: string; handle: string | null; created_at: string }> | null>(null);
   const [creatorMetrics, setCreatorMetrics] = useState<Array<{ platform: string; followers: number; avg_views_10: number; engagement_rate_10: number; total_views: number; top_videos?: any }> | null>(null);
   const [creatorProfile, setCreatorProfile] = useState<{ size_tier: string; primary_topics?: string[]; keywords?: string[]; summary?: string } | null>(null);
+  const [creatorAiProfile, setCreatorAiProfile] = useState<CreatorAiProfileRow | null>(null);
   const [brandRecommendations, setBrandRecommendations] = useState<any[] | null>(null);
   const [brandRecommendationsCount, setBrandRecommendationsCount] = useState(0);
   const [pitches, setPitches] = useState<any[] | null>(null);
@@ -186,6 +199,7 @@ const UserDataProvider = ({ children, userId }: { children: React.ReactNode; use
         socialAccountsResult,
         metricsResult,
         profileResult,
+        aiProfileResult,
         recommendationsResult,
         pitchesResult,
         followupsResult,
@@ -209,8 +223,14 @@ const UserDataProvider = ({ children, userId }: { children: React.ReactNode; use
           .single(),
         
         supabase
+          .from('creator_ai_profiles')
+          .select('headline, bio, niches, themes, brand_fit, suggested_collab_types, updated_at')
+          .eq('user_id', userId)
+          .maybeSingle(),
+        
+        supabase
           .from('brand_recommendations')
-          .select('id, user_id, brand_id, status, channel, deliverable, deal_type, generated_pitch, created_at, updated_at')
+          .select('*')
           .eq('user_id', userId)
           .order('created_at', { ascending: false }),
         
@@ -241,6 +261,21 @@ const UserDataProvider = ({ children, userId }: { children: React.ReactNode; use
         }
         
         setCreatorProfile(profileResult.data);
+      }
+
+      if (!aiProfileResult.error && aiProfileResult.data) {
+        const row = aiProfileResult.data as any;
+        setCreatorAiProfile({
+          headline: row.headline ?? null,
+          bio: row.bio ?? null,
+          niches: Array.isArray(row.niches) ? row.niches : [],
+          themes: Array.isArray(row.themes) ? row.themes : [],
+          brand_fit: Array.isArray(row.brand_fit) ? row.brand_fit : [],
+          suggested_collab_types: Array.isArray(row.suggested_collab_types) ? row.suggested_collab_types : [],
+          updated_at: row.updated_at ?? null,
+        });
+      } else {
+        setCreatorAiProfile(null);
       }
 
       if (!recommendationsResult.error && recommendationsResult.data) {
@@ -296,7 +331,7 @@ const UserDataProvider = ({ children, userId }: { children: React.ReactNode; use
     const { supabase } = await import('../lib/supabaseClient');
     const { data } = await supabase
       .from('brand_recommendations')
-          .select('id, user_id, brand_id, status, channel, deliverable, deal_type, generated_pitch, created_at, updated_at')
+      .select('*')
       .eq('user_id', userId)
       .order('created_at', { ascending: false });
     
@@ -371,14 +406,23 @@ const UserDataProvider = ({ children, userId }: { children: React.ReactNode; use
       }
     };
 
+    const handleRefreshEvent = () => {
+      refreshSilently();
+    };
+
     window.addEventListener('focus', handleFocus);
-    return () => window.removeEventListener('focus', handleFocus);
+    window.addEventListener('exla-refresh-user-data', handleRefreshEvent);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('exla-refresh-user-data', handleRefreshEvent);
+    };
   }, [userId, lastFetched, refreshSilently]);
 
   const value: UserDataStore = {
     socialAccounts,
     creatorMetrics,
     creatorProfile,
+    creatorAiProfile,
     brandRecommendations,
     brandRecommendationsCount,
     pitches,
@@ -458,7 +502,7 @@ const awardXP = (amount: number) => {
 // Components
 const ExlaLogo = ({ size = 32, opacity = 1 }) => (
   <img 
-    src="https://i.imgur.com/e3TarNN.png" 
+    src="/brand/logo.png" 
     alt="Exla" 
     width={size} 
     height={size}
@@ -650,29 +694,32 @@ const DestructiveButton = ({ children, onClick, fullWidth = false, disabled = fa
 };
 
 // Legacy Button component for backward compatibility
-const Button = ({ children, onClick, variant = 'primary', fullWidth, disabled = false, className = '', type = 'button' }: { children: React.ReactNode; onClick?: () => void; variant?: 'primary' | 'secondary' | 'ghost'; fullWidth?: boolean; disabled?: boolean; className?: string; type?: 'button' | 'submit' | 'reset' }) => {
+const Button = ({ children, onClick, variant = 'primary', fullWidth, disabled = false, className = '', type = 'button', isLoading = false }: { children: React.ReactNode; onClick?: () => void; variant?: 'primary' | 'secondary' | 'ghost'; fullWidth?: boolean; disabled?: boolean; className?: string; type?: 'button' | 'submit' | 'reset'; isLoading?: boolean }) => {
   if (variant === 'primary') {
-    return <PrimaryButton onClick={onClick} fullWidth={fullWidth} disabled={disabled} className={className} type={type}>{children}</PrimaryButton>;
+    return <PrimaryButton onClick={onClick} fullWidth={fullWidth} disabled={disabled || isLoading} className={className} type={type}>{isLoading ? <><Loader2 className="animate-spin mr-2" size={16} /> Loading...</> : children}</PrimaryButton>;
   } else if (variant === 'secondary') {
-    return <SecondaryButton onClick={onClick} fullWidth={fullWidth} disabled={disabled} className={className} type={type}>{children}</SecondaryButton>;
+    return <SecondaryButton onClick={onClick} fullWidth={fullWidth} disabled={disabled || isLoading} className={className} type={type}>{isLoading ? <><Loader2 className="animate-spin mr-2" size={16} /> Loading...</> : children}</SecondaryButton>;
   }
   const baseStyles = "px-4 py-2.5 text-sm font-medium rounded-lg transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed active:scale-98";
   return (
     <button
       type={type}
       onClick={onClick}
-      disabled={disabled}
+      disabled={disabled || isLoading}
       className={`${baseStyles} bg-transparent text-gray-700 hover:bg-gray-50 ${fullWidth ? 'w-full' : ''} ${className}`}
     >
-      {children}
+      {isLoading ? <><Loader2 className="animate-spin mr-2" size={16} /> Loading...</> : children}
     </button>
   );
 };
 
 // Card Component - Consistent card styling
-const Card = ({ children, className = '', padding = 'p-4' }: { children: React.ReactNode; className?: string; padding?: string }) => {
+const Card = ({ children, className = '', padding = 'p-4', variant }: { children: React.ReactNode; className?: string; padding?: string; variant?: 'highlight' | 'default' }) => {
+  const variantStyles = variant === 'highlight' 
+    ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white border-0 shadow-lg'
+    : 'bg-white border border-gray-200';
   return (
-    <div className={`bg-white border border-gray-200 rounded-xl shadow-sm ${padding} ${className}`}>
+    <div className={`${variantStyles} rounded-xl shadow-sm ${padding} ${className}`}>
       {children}
     </div>
   );
@@ -1223,6 +1270,17 @@ const NotificationsScreen = ({ onClose }: { onClose: () => void }) => {
   );
 };
 
+// Extract YouTube video ID from watch URL or youtu.be short URL (no DB dependency)
+function getYoutubeVideoId(url: string | null | undefined): string | null {
+  if (!url || typeof url !== 'string') return null;
+  try {
+    const u = new URL(url);
+    if (u.hostname.includes('youtube.com') && u.searchParams.get('v')) return u.searchParams.get('v');
+    if (u.hostname === 'youtu.be') return u.pathname.slice(1).split('/')[0] || null;
+  } catch { }
+  return null;
+}
+
 // Public Media Kit Screen
 const PublicMediaKit = ({ onClose }: { onClose: () => void }) => {
   const { user, loading: authLoading } = useAuth();
@@ -1244,6 +1302,10 @@ const PublicMediaKit = ({ onClose }: { onClose: () => void }) => {
   const [inferredNiche, setInferredNiche] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<any>(null);
   const [scanJobError, setScanJobError] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
 
   useEffect(() => {
     if (authLoading) return;
@@ -1255,11 +1317,23 @@ const PublicMediaKit = ({ onClose }: { onClose: () => void }) => {
 
     const fetchData = async () => {
       try {
-        // Use unified data fetcher
-        const data = await getMediaKitData(user.id);
+        const { supabase } = await import('../lib/supabaseClient');
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session?.access_token) {
+          setLoading(false);
+          return;
+        }
+        const res = await fetch('/api/media-kit', {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || `Failed to load media kit (${res.status})`);
+        }
+        const data: MediaKitData = await res.json();
         setKitData(data);
 
-        // Also fetch profile and creator for compatibility
+        // Also fetch profile and creator for compatibility (for display name, etc.)
         const userProfile = await getProfile(user.id);
         let creatorProfile = await getCreatorProfile(user.id);
         setProfile(userProfile);
@@ -1337,91 +1411,58 @@ const PublicMediaKit = ({ onClose }: { onClose: () => void }) => {
         // Handle scanning state - poll for updates
         if (data.status === 'scanning' && data.scanJobId) {
           setScanning(true);
-          const pollInterval = setInterval(async () => {
-            const updatedData = await getMediaKitData(user.id);
-            setKitData(updatedData);
-            if (updatedData.status !== 'scanning') {
-              clearInterval(pollInterval);
-              setScanning(false);
-            }
-          }, 2000);
-          return () => clearInterval(pollInterval);
         } else {
           setScanning(false);
         }
       } catch (err) {
         console.error('[PublicMediaKit] Failed to fetch media kit data:', err);
+        setKitData({
+          profile: { name: null, username: null, niche: null, avatar_url: null, bio: null },
+          platforms: [],
+          stats: { audience: 0, avgViews: 0, engagement: 0 },
+          topContent: [],
+          suggestedRateRange: { min: 0, max: 0, currency: 'USD' },
+          status: 'missing',
+        });
       } finally {
         setLoading(false);
       }
     };
 
     fetchData();
-  }, [user, authLoading, scanning]);
+  }, [user, authLoading]);
+
+  // Separate useEffect for polling when scanning (e.g. after reconnect)
+  useEffect(() => {
+    if (!user || !kitData || kitData.status !== 'scanning' || !kitData.scanJobId) {
+      return;
+    }
+
+    const pollInterval = setInterval(async () => {
+      try {
+        const { supabase } = await import('../lib/supabaseClient');
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session?.access_token) return;
+        const res = await fetch('/api/media-kit', { headers: { Authorization: `Bearer ${session.access_token}` } });
+        if (!res.ok) return;
+        const updatedData: MediaKitData = await res.json();
+        setKitData(updatedData);
+        if (updatedData.status !== 'scanning') {
+          clearInterval(pollInterval);
+          setScanning(false);
+        }
+      } catch {
+        // ignore
+      }
+    }, 2000);
+
+    return () => {
+      clearInterval(pollInterval);
+    };
+  }, [user, kitData]);
 
   const router = useRouter();
 
-  const handleStartScan = async () => {
-    if (!user) return;
-    
-    setScanning(true);
-    let requestTimeout: NodeJS.Timeout | null = null;
-    
-    try {
-      // Get auth token for API call
-      const { supabase } = await import('../lib/supabaseClient');
-      const { data: { session } } = await supabase.auth.getSession();
-      
-      if (!session?.access_token) {
-        throw new Error('Not authenticated');
-      }
-
-      // Call unified scan start endpoint with timeout
-      const controller = new AbortController();
-      requestTimeout = setTimeout(() => controller.abort(), 12000); // 12s timeout
-
-      const response = await fetch('/api/scan/start', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({ userId: user.id }),
-        signal: controller.signal,
-      });
-
-      if (requestTimeout) clearTimeout(requestTimeout);
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(errorData.error || 'Failed to start scan');
-      }
-
-      const data = await response.json();
-      
-      if (!data.ok || !data.scan_job_id) {
-        throw new Error('Invalid response from scan start');
-      }
-
-      // Navigate to scanning screen with job ID
-      goOnboardingPush(router, 'scanning', `job=${data.scan_job_id}`);
-      // Don't set scanning(false) here - let the scanning page handle state
-    } catch (err: any) {
-      if (requestTimeout) clearTimeout(requestTimeout);
-      
-      console.error('[Scan Now] Error:', err);
-      
-      // Show error message (visible in dev)
-      if (process.env.NODE_ENV === 'development') {
-        alert(`Failed to start scan: ${err.message || 'Unknown error'}`);
-      } else {
-        alert('Failed to start scan. Please try again.');
-      }
-      
-      setScanning(false);
-    }
-  };
-  
   const username = kitData?.profile?.username || profile?.username || user?.email?.split('@')[0] || 'creator';
   const shareUrl = `exla.app/u/${username}`;
 
@@ -1497,6 +1538,85 @@ const PublicMediaKit = ({ onClose }: { onClose: () => void }) => {
     setNameValue('');
   };
 
+  const handleSyncNow = async () => {
+    if (!user) return;
+    setSyncing(true);
+    setSyncError(null);
+    try {
+      const { supabase } = await import('../lib/supabaseClient');
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        setSyncError('Please sign in again');
+        return;
+      }
+      const res = await fetch('/api/sync/youtube', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setSyncError(json.error || 'Sync failed');
+        return;
+      }
+      const mediaRes = await fetch('/api/media-kit', {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      if (mediaRes.ok) {
+        const data = await mediaRes.json();
+        setKitData(data);
+      }
+    } catch (e: any) {
+      setSyncError(e?.message || 'Sync failed');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const handleRefreshAnalysis = async () => {
+    if (!user) return;
+    console.log('refresh_analysis_clicked', { userId: user.id });
+    setAnalyzing(true);
+    setAnalysisError(null);
+    try {
+      const { supabase } = await import('../lib/supabaseClient');
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        setAnalysisError('Please sign in again');
+        return;
+      }
+      const res = await fetch('/api/analyze/creator-profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+      });
+      const json = await res.json().catch(() => ({}));
+      console.log('refresh_analysis_response', { status: res.status, ok: res.ok, hasProfile: !!json.profile, error: json.error });
+      if (!res.ok) {
+        const msg = json.error || `Analysis failed (${res.status})`;
+        setAnalysisError(msg);
+        return;
+      }
+      const mediaRes = await fetch(`/api/media-kit?t=${Date.now()}`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      if (mediaRes.ok) {
+        const data = await mediaRes.json();
+        setKitData(data);
+        console.log('refresh_analysis_ui_updated', { hasAiProfile: !!data.aiProfile, headline: data.aiProfile?.headline?.slice(0, 30) });
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('exla-refresh-user-data'));
+        }
+      } else {
+        setAnalysisError('Profile saved but failed to refresh view. Pull to refresh.');
+      }
+    } catch (e: any) {
+      const msg = e?.message || 'Analysis failed';
+      setAnalysisError(msg);
+      console.error('refresh_analysis_error', msg);
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
   if (loading || authLoading) {
     return (
       <div className="min-h-screen bg-white flex items-center justify-center">
@@ -1515,413 +1635,523 @@ const PublicMediaKit = ({ onClose }: { onClose: () => void }) => {
     );
   }
 
+  const displayName = kitData?.profile?.name || profile?.name || username;
+  const displayNiche = kitData?.profile?.niche || creator?.niche || profile?.niche || inferredNiche || 'Tech creator';
+  const primaryPlatform = profile?.primary_platform || kitData?.platforms?.[0]?.platform || 'youtube';
+  const platformLabel = primaryPlatform === 'youtube' ? 'YouTube' : primaryPlatform === 'tiktok' ? 'TikTok' : primaryPlatform;
+  const youtubeMetrics = kitData?.platforms?.find((p: any) => p.platform === 'youtube');
+  const avgViews = kitData?.stats?.avgViews ?? youtubeMetrics?.avg_views_10 ?? 0;
+  const hasAvgViews = avgViews > 0;
+  const audience = kitData?.stats?.audience ?? 0;
+  const engagement = kitData?.stats?.engagement ?? 0;
+  const hasEngagement = engagement > 0;
+  const updatedAt = kitData?.updatedAt ?? null;
+  const aiProfile = kitData?.aiProfile ?? null;
+
+  // Format numbers: exact below 1000, "1.2K" / "1.2M" when large
+  const formatMediaKitCount = (n: number | undefined | null) => {
+    const val = n ?? 0;
+    if (val === 0) return null;
+    if (val >= 1_000_000) return `${(val / 1_000_000).toFixed(1)}M`;
+    if (val >= 1000) return `${(val / 1000).toFixed(1)}K`;
+    return val.toLocaleString();
+  };
+
+  // Generate "Why brands work with me" items
+  const whyBrands = [
+    displayNiche && displayNiche !== 'Creator' 
+      ? `High-engagement audience of ${displayNiche.toLowerCase()}`
+      : 'High-engagement audience',
+    'Proven product-focused storytelling',
+    'Consistent weekly publishing schedule',
+  ].filter(Boolean);
+
+  // Generate brand fit items from niche/topics
+  const brandFit: string[] = [];
+  if (displayNiche && displayNiche !== 'Creator' && displayNiche !== 'N/A') {
+    if (displayNiche.toLowerCase().includes('tech') || displayNiche.toLowerCase().includes('developer')) {
+      brandFit.push('Developer tools', 'SaaS products', 'Productivity software', 'Educational platforms');
+    } else {
+      const nicheBrands = displayNiche + ' brands';
+      brandFit.push(nicheBrands, 'Product partnerships', 'Content collaborations');
+    }
+  } else {
+    brandFit.push('Product partnerships', 'Content collaborations', 'Brand sponsorships');
+  }
+
+  const ACTION_BAR_HEIGHT = 140;
+
   return (
-    <PhoneModal onClickBackdrop={onClose}>
-      <div className="absolute inset-0 bg-white flex flex-col">
-        <Screen scroll={true} className="pt-6 pb-32 flex-1">
-          <Container>
-            <div className="flex items-center justify-between mb-6">
-              <ExlaLogo size={24} />
-              <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600">
-                <X size={24} />
-              </button>
-            </div>
+    <div className="h-screen flex flex-col bg-[#F8FAFC] overflow-hidden">
+      {/* Header - fixed height */}
+      <div className="flex-shrink-0 bg-white px-6 py-4 border-b border-[rgba(15,23,42,0.06)]">
+        <div className="flex items-center justify-between">
+          <button onClick={onClose} className="flex items-center gap-2 text-[#64748B]">
+            <ChevronLeft className="w-5 h-5" />
+          </button>
+          <h2 className="text-[15px] font-semibold text-[#0F172A]">Media Kit</h2>
+          <img 
+            src="/brand/logo.png" 
+            alt="Exla" 
+            className="w-4 h-4 opacity-70"
+          />
+        </div>
+        <p className="text-[10px] text-[#64748B] text-center mt-2 font-normal">
+          Auto-generated with Exla
+        </p>
+      </div>
 
-            <div className="space-y-8 pb-8">
-          {/* Hero Header - Premium Design (Fixed Visual Artifacts) */}
-          <div className="rounded-2xl overflow-hidden relative shadow-xl ring-1 ring-white/10">
-            <div className="absolute inset-0 bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500"></div>
-            <div className="relative p-8 text-center">
-              <div className="relative inline-block mb-5">
-                <div className="absolute inset-0 rounded-full bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 blur-xl opacity-60"></div>
-                <div className="relative w-28 h-28 bg-white rounded-full mx-auto flex items-center justify-center ring-2 ring-white/80 shadow-lg">
-                  {profile?.avatar_url ? (
-                    <img src={profile.avatar_url} alt={username} className="w-full h-full rounded-full object-cover" />
-                  ) : (
-                    <div className="w-full h-full rounded-full bg-gradient-to-br from-indigo-100 to-purple-100 flex items-center justify-center">
-                      <span className="text-4xl">👤</span>
-                    </div>
-                  )}
-                </div>
+      {/* Scrollable content - flex-1 min-h-0 + overflow-y-auto so this area scrolls */}
+      <div
+        className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden"
+        style={{ paddingBottom: ACTION_BAR_HEIGHT + 24 }}
+      >
+      <div className="px-6 py-4 space-y-5">
+        {/* Handle different states */}
+        {kitData?.status === 'scanning' || scanning ? (
+          <div className="py-8 text-center space-y-4">
+            <Loader2 className="animate-spin text-indigo-600 mx-auto" size={32} />
+            <p className="text-sm text-gray-600">Scanning your account...</p>
+            <div className="space-y-2">
+              <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
+                <div className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 animate-pulse" style={{ width: '60%' }} />
               </div>
-              <div className="flex items-center justify-center gap-2 mb-1">
-                {editingName ? (
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={nameValue}
-                      onChange={(e) => setNameValue(e.target.value)}
-                      className="text-2xl font-semibold text-white bg-white/20 border border-white/30 rounded-lg px-3 py-1.5 text-center focus:outline-none focus:ring-2 focus:ring-white/50"
-                      autoFocus
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          if (!savingName && nameValue.trim()) {
-                            handleSaveName();
-                          }
-                        }
-                        if (e.key === 'Escape') {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          handleCancelEditName();
-                        }
-                      }}
-                    />
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        handleSaveName();
-                      }}
-                      disabled={savingName || !nameValue.trim()}
-                      className="text-white hover:text-white/80 disabled:opacity-50"
-                    >
-                      {savingName ? (
-                        <Loader2 size={18} className="animate-spin" />
+            </div>
+          </div>
+        ) : kitData?.status === 'missing' ? (
+          <div className="py-8 text-center space-y-4">
+            {diagnostics?.latestScanJob &&
+             (diagnostics.latestScanJob.status === 'queued' || diagnostics.latestScanJob.status === 'running') ? (
+              <div className="space-y-4">
+                <Loader2 className="animate-spin text-indigo-600 mx-auto" size={32} />
+                <p className="text-sm text-gray-600">Scan in progress...</p>
+                <Button
+                  onClick={() => {
+                    if (diagnostics.latestScanJob?.id) {
+                      goOnboardingPush(router, 'scanning', `job=${diagnostics.latestScanJob.id}`);
+                    }
+                  }}
+                  variant="secondary"
+                  className="w-full"
+                >
+                  View Progress
+                </Button>
+              </div>
+            ) : scanJobError || (diagnostics?.latestScanJob && diagnostics.latestScanJob.status === 'failed') ? (
+              <div className="space-y-3">
+                <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
+                  <p className="text-sm font-semibold text-red-900 mb-1">Previous scan failed</p>
+                  <p className="text-xs text-red-700">{scanJobError || diagnostics?.latestScanJob?.error || 'Unknown error'}</p>
+                </div>
+                <p className="text-sm text-gray-600">Connect a platform again from Home to regenerate your media kit.</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-sm text-gray-600">
+                  Your media kit is generated from your connected platforms. Connect YouTube or TikTok from Home to see your kit here.
+                </p>
+                <Button variant="secondary" className="w-full" onClick={onClose}>
+                  Back
+                </Button>
+              </div>
+            )}
+          </div>
+        ) : kitData && kitData.status === 'ready' ? (
+          <>
+            {analysisError && (
+              <div className="mb-4 p-4 rounded-xl bg-red-50 border border-red-200 text-red-800" role="alert">
+                <p className="font-semibold text-sm">Analysis failed</p>
+                <p className="text-sm mt-1">{analysisError}</p>
+                <button type="button" onClick={() => setAnalysisError(null)} className="text-xs underline mt-2">Dismiss</button>
+              </div>
+            )}
+            {analyzing && (
+              <div className="mb-4 p-3 rounded-xl bg-indigo-50 border border-indigo-100 text-indigo-800 text-sm flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin flex-shrink-0" />
+                <span>Analyzing your content… Building headline, themes, and brand fit.</span>
+              </div>
+            )}
+            {/* Hero Profile Card */}
+            <Card variant="highlight">
+              <div className="flex items-start justify-between mb-5">
+                <div className="flex items-center gap-3">
+                  <div className="w-14 h-14 bg-white/20 rounded-full flex items-center justify-center text-white text-[18px] font-semibold">
+                    {displayName.charAt(0).toUpperCase()}
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      {editingName ? (
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={nameValue}
+                            onChange={(e) => setNameValue(e.target.value)}
+                            className="text-[20px] font-semibold text-white bg-white/20 border border-white/30 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-white/50"
+                            autoFocus
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' && !savingName && nameValue.trim()) {
+                                handleSaveName();
+                              }
+                              if (e.key === 'Escape') {
+                                handleCancelEditName();
+                              }
+                            }}
+                          />
+                          <button
+                            type="button"
+                            onClick={handleSaveName}
+                            disabled={savingName || !nameValue.trim()}
+                            className="text-white hover:text-white/80 disabled:opacity-50"
+                          >
+                            {savingName ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleCancelEditName}
+                            disabled={savingName}
+                            className="text-white/80 hover:text-white disabled:opacity-50"
+                          >
+                            <X size={16} />
+                          </button>
+                        </div>
                       ) : (
-                        <Check size={18} />
+                        <>
+                          <h2 className="text-[20px] font-semibold text-white">
+                            {displayName}
+                          </h2>
+                          <button 
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              handleEditName(e);
+                            }}
+                            className="p-1"
+                          >
+                            <Edit2 className="w-4 h-4 text-white/70" />
+                          </button>
+                        </>
                       )}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        handleCancelEditName();
-                      }}
-                      disabled={savingName}
-                      className="text-white/80 hover:text-white disabled:opacity-50"
-                    >
-                      <X size={18} />
-                    </button>
+                    </div>
+                    <p className="text-[13px] text-white/80">@{username}</p>
                   </div>
-                ) : (
-                  <>
-                    <h1 className="text-2xl font-semibold text-white">
-                      {kitData?.profile?.name || profile?.name || username}
-                    </h1>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        handleEditName(e);
-                      }}
-                      className="text-white/70 hover:text-white transition-colors"
-                      title="Edit name"
-                    >
-                      <Edit2 size={16} />
-                    </button>
-                  </>
-                )}
+                </div>
               </div>
-              <p className="text-sm text-white/90 mb-3">@{username}</p>
-              <p className="text-xs text-white/80 font-medium">
-                {(() => {
-                  const niche = kitData?.profile?.niche || creator?.niche || profile?.niche || inferredNiche;
-                  const primaryPlatform = profile?.primary_platform || kitData?.platforms?.[0]?.platform || 'Creator';
-                  if (niche && niche !== 'Creator' && niche !== 'N/A') {
-                    return `${primaryPlatform} Creator • ${niche}`;
-                  }
-                  // Only show generic if truly no data
-                  return 'Creator • Brand collaborations';
-                })()}
+              <p className="text-[14px] text-white/95 leading-relaxed mb-3">
+                {aiProfile?.headline ?? (displayNiche && displayNiche !== 'Creator' && displayNiche !== 'N/A'
+                  ? (displayNiche.toLowerCase().endsWith('creator')
+                      ? `${displayNiche} on ${platformLabel}`
+                      : `${displayNiche} creator on ${platformLabel}`)
+                  : `${platformLabel} creator`)}
               </p>
-            </div>
-          </div>
+              <p className="text-[13px] text-white/90 font-medium">
+                {hasAvgViews
+                  ? `Avg views (last 10): ${formatMediaKitCount(avgViews) ?? '—'}`
+                  : 'Connect and sync to see average views'}
+              </p>
+            </Card>
 
-          {/* Handle different states */}
-          {kitData?.status === 'scanning' || scanning ? (
-            <div className="py-8 text-center space-y-4">
-              <Loader2 className="animate-spin text-indigo-600 mx-auto" size={32} />
-              <p className="text-sm text-gray-600">Scanning your account...</p>
-              <div className="space-y-2">
-                <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
-                  <div className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 animate-pulse" style={{ width: '60%' }} />
+            {/* Stats Section */}
+            <div>
+              <SectionLabel className="mb-3">Audience & Reach</SectionLabel>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="bg-white border border-[rgba(15,23,42,0.06)] rounded-[14px] p-4 text-center min-h-[120px] flex flex-col justify-center">
+                  <Users className="w-[22px] h-[22px] text-[#64748B] mx-auto mb-2" />
+                  <p className="text-[20px] font-semibold text-[#0F172A]">
+                    {audience > 0 ? (formatMediaKitCount(audience) ?? '—') : 'Not available'}
+                  </p>
+                  <p className="text-[11px] text-[#64748B] mt-0.5">Subscribers</p>
+                </div>
+                <div className="bg-white border border-[rgba(15,23,42,0.06)] rounded-[14px] p-4 text-center min-h-[120px] flex flex-col justify-center">
+                  <Eye className="w-[22px] h-[22px] text-[#64748B] mx-auto mb-2" />
+                  <p className="text-[20px] font-semibold text-[#0F172A]">
+                    {hasAvgViews ? (formatMediaKitCount(avgViews) ?? '—') : 'Not available'}
+                  </p>
+                  <p className="text-[11px] text-[#64748B] mt-0.5">Avg views (last 10)</p>
+                </div>
+                <div className="bg-white border border-[rgba(15,23,42,0.06)] rounded-[14px] p-4 text-center min-h-[120px] flex flex-col justify-center relative">
+                  <span className="absolute top-2 right-2 px-1.5 py-0.5 bg-[#0F172A] rounded text-[8px] text-white uppercase tracking-wider font-medium">Top metric</span>
+                  <TrendingUp className="w-[22px] h-[22px] text-[#0F172A] mx-auto mb-2" />
+                  <p className="text-[20px] font-semibold text-[#0F172A]">
+                    {hasEngagement ? `${Number(engagement).toFixed(1)}%` : 'Not available'}
+                  </p>
+                  <p className="text-[11px] text-[#64748B] mt-0.5">Per view</p>
                 </div>
               </div>
-            </div>
-          ) : kitData?.status === 'missing' ? (
-            <div className="py-8 text-center space-y-4">
-              {/* Check if there's an active scan job - if so, redirect to scanning */}
-              {diagnostics?.latestScanJob && 
-               (diagnostics.latestScanJob.status === 'queued' || diagnostics.latestScanJob.status === 'running') ? (
-                <div className="space-y-4">
-                  <Loader2 className="animate-spin text-indigo-600 mx-auto" size={32} />
-                  <p className="text-sm text-gray-600">Scan in progress...</p>
-                  <Button
-                    onClick={() => {
-                      if (diagnostics.latestScanJob?.id) {
-                        goOnboardingPush(router, 'scanning', `job=${diagnostics.latestScanJob.id}`);
-                      }
-                    }}
-                    variant="secondary"
-                  >
-                    View Progress
-                  </Button>
-                </div>
-              ) : scanJobError || (diagnostics?.latestScanJob && diagnostics.latestScanJob.status === 'failed') ? (
-                <>
-                  <div className="p-4 bg-red-50 border border-red-200 rounded-lg mb-4">
-                    <p className="text-sm font-semibold text-red-900 mb-1">Scan Failed</p>
-                    <p className="text-xs text-red-700">{scanJobError || diagnostics?.latestScanJob?.error || 'Unknown error'}</p>
-                  </div>
-                  <Button 
-                    onClick={handleStartScan} 
-                    disabled={scanning}
-                    variant="primary"
-                  >
-                    {scanning ? (
-                      <>
-                        <Loader2 className="animate-spin mr-2" size={16} />
-                        Starting scan...
-                      </>
-                    ) : (
-                      'Retry Scan'
-                    )}
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <p className="text-sm text-gray-600">No scan data found. Scan your account to generate your media kit.</p>
-                  <Button 
-                    onClick={handleStartScan} 
-                    disabled={scanning}
-                    variant="primary"
-                  >
-                    {scanning ? (
-                      <>
-                        <Loader2 className="animate-spin mr-2" size={16} />
-                        Starting scan...
-                      </>
-                    ) : (
-                      'Scan Now'
-                    )}
-                  </Button>
-                </>
-              )}
-              
-              {/* Dev-only diagnostics */}
-              {(process.env.NODE_ENV === 'development' || (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('debug') === '1')) && diagnostics && (
-                <div className="mt-8 p-4 bg-gray-50 border border-gray-200 rounded-lg text-left">
-                  <p className="text-xs font-semibold text-gray-900 mb-3">🔍 Diagnostics (Dev Only)</p>
-                  <div className="space-y-2 text-xs font-mono">
-                    <div><span className="text-gray-600">User ID:</span> <span className="text-gray-900">{diagnostics.authUserId}</span></div>
-                    <div><span className="text-gray-600">Profile exists:</span> <span className={diagnostics.profileExists ? 'text-green-600' : 'text-red-600'}>{diagnostics.profileExists ? 'Yes' : 'No'}</span></div>
-                    {diagnostics.latestScanJob ? (
-                      <>
-                        <div className="pt-2 border-t border-gray-200">
-                          <div className="font-semibold text-gray-900 mb-1">Latest Scan Job:</div>
-                          <div className="ml-2 space-y-1">
-                            <div><span className="text-gray-600">ID:</span> <span className="text-gray-900">{diagnostics.latestScanJob.id}</span></div>
-                            <div><span className="text-gray-600">Status:</span> <span className={`font-semibold ${diagnostics.latestScanJob.status === 'complete' ? 'text-green-600' : diagnostics.latestScanJob.status === 'failed' ? 'text-red-600' : 'text-yellow-600'}`}>{diagnostics.latestScanJob.status}</span></div>
-                            <div><span className="text-gray-600">Progress:</span> <span className="text-gray-900">{diagnostics.latestScanJob.progress}%</span></div>
-                            <div><span className="text-gray-600">Created:</span> <span className="text-gray-900">{new Date(diagnostics.latestScanJob.created_at).toLocaleString()}</span></div>
-                            {diagnostics.latestScanJob.error && (
-                              <div><span className="text-gray-600">Error message:</span> <span className="text-red-600 break-words">{diagnostics.latestScanJob.error}</span></div>
-                            )}
-                          </div>
-                        </div>
-                        <div><span className="text-gray-600">Scan results count:</span> <span className="text-gray-900">{diagnostics.scanResultsCount || 0}</span> <span className="text-gray-500">(creator_metrics rows)</span></div>
-                      </>
-                    ) : (
-                      <div className="pt-2 border-t border-gray-200"><span className="text-red-600">No scan job found</span></div>
-                    )}
-                    <div className="pt-2 border-t border-gray-200">
-                      <div className="font-semibold text-gray-900 mb-1">Social Accounts:</div>
-                      <div className="ml-2">
-                        <div><span className="text-gray-600">Count:</span> <span className="text-gray-900">{diagnostics.socialAccountsCount || 0}</span></div>
-                        {diagnostics.socialAccounts && diagnostics.socialAccounts.length > 0 ? (
-                          <div className="ml-2 mt-1">
-                            {diagnostics.socialAccounts.map((acc: any, i: number) => (
-                              <div key={i} className="text-gray-700">
-                                - {acc.platform} (@{acc.handle || 'N/A'}) - {acc.scan_status || 'N/A'}
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="ml-2 text-gray-500">None</div>
-                        )}
-                      </div>
-                    </div>
-                    <div><span className="text-gray-600">Creator metrics count:</span> <span className="text-gray-900">{diagnostics.creatorMetricsCount || 0}</span></div>
-                    <div><span className="text-gray-600">Kit data status:</span> <span className="text-gray-900">{diagnostics.kitDataStatus}</span></div>
-                    {diagnostics.kitDataScanJobId && (
-                      <div><span className="text-gray-600">Kit scan job ID:</span> <span className="text-gray-900">{diagnostics.kitDataScanJobId}</span></div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          ) : kitData && kitData.status === 'ready' ? (
-            <>
-          {/* Stats Pills - Premium Cards with fixed layout */}
-          <div className="grid grid-cols-3 gap-3">
-            <div className="bg-white rounded-2xl px-4 py-4 shadow-sm border border-gray-100 min-h-[100px] flex flex-col justify-between">
-              <div className="flex items-center gap-2 mb-2">
-                <Users size={16} className="text-indigo-600 shrink-0" />
-                <p className="text-xs text-gray-500 font-medium tracking-wide label-text">Audience</p>
-              </div>
-              <p className="text-lg font-semibold text-gray-900">
-                {kitData.stats.audience > 0 ? kitData.stats.audience.toLocaleString() : '--'}
-              </p>
-            </div>
-            <div className="bg-white rounded-2xl px-4 py-4 shadow-sm border border-gray-100 min-h-[100px] flex flex-col justify-between">
-              <div className="flex items-center gap-2 mb-2">
-                <Eye size={16} className="text-indigo-600 shrink-0" />
-                <p className="text-xs text-gray-500 font-medium tracking-wide label-text">Avg views</p>
-              </div>
-              <p className="text-lg font-semibold text-gray-900">
-                {kitData.stats.avgViews > 0 ? kitData.stats.avgViews.toLocaleString() : '--'}
-              </p>
-            </div>
-            <div className="bg-white rounded-2xl px-4 py-4 shadow-sm border border-gray-100 min-h-[100px] flex flex-col justify-between">
-              <div className="flex items-center gap-2 mb-2">
-                <TrendingUp size={16} className="text-indigo-600 shrink-0" />
-                <p className="text-xs text-gray-500 font-medium tracking-wide label-text">Engagement</p>
-              </div>
-              <p className="text-lg font-semibold text-indigo-600">
-                {kitData.stats.engagement > 0 ? `${kitData.stats.engagement.toFixed(1)}%` : '--'}
-              </p>
-            </div>
-          </div>
-
-              {/* Platforms Section - Clean Card Style */}
-              {kitData.platforms && kitData.platforms.length > 0 && (
-                <div>
-                  <h3 className="text-xs font-semibold text-gray-900 mb-4 tracking-wide uppercase">Platforms</h3>
-                  <div className="space-y-4">
-                    {kitData.platforms.map((platform: any, i: number) => (
-                      <div key={i} className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
-                        <div className="flex items-center gap-4 mb-5">
-                          <div className="w-16 h-16 bg-gradient-to-br from-indigo-50 to-purple-50 rounded-xl flex items-center justify-center shadow-sm">
-                            {platform.platform === 'youtube' ? (
-                              <Youtube size={28} className="text-red-600" />
-                            ) : platform.platform === 'tiktok' ? (
-                              <span className="text-3xl">🎵</span>
-                            ) : (
-                              <Instagram size={28} className="text-pink-600" />
-                            )}
-                          </div>
-                          <div className="flex-1">
-                            <p className="text-sm font-semibold text-gray-900 capitalize mb-1">{platform.platform}</p>
-                            {platform.handle && (
-                              <p className="text-xs text-gray-500">@{platform.handle}</p>
-                            )}
-                          </div>
-                        </div>
-                        <div className="grid grid-cols-3 gap-3 pt-4 border-t border-gray-100">
-                          <div>
-                            <p className="text-xs text-gray-500 mb-1.5 tracking-wide label-text">Followers</p>
-                            <p className="text-sm font-semibold text-gray-900">{platform.followers?.toLocaleString() || '--'}</p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-gray-500 mb-1.5 tracking-wide label-text">Avg views</p>
-                            <p className="text-sm font-semibold text-gray-900">{platform.avg_views_10?.toLocaleString() || '--'}</p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-gray-500 mb-1.5 tracking-wide label-text">Engagement</p>
-                            <p className="text-sm font-semibold text-indigo-600">{platform.engagement_rate_10 ? `${platform.engagement_rate_10.toFixed(1)}%` : '--'}</p>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Brand Pitch Section - Premium Card */}
-              <div className="bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50 rounded-2xl p-6 shadow-sm border border-indigo-100/50">
-                <h3 className="text-xs font-semibold text-gray-900 mb-5 tracking-wide uppercase">Brand fit</h3>
-                <div className="space-y-4">
-                  <div className="flex items-start gap-3">
-                    <div className="w-5 h-5 rounded-full bg-indigo-600 flex items-center justify-center flex-shrink-0 mt-0.5">
-                      <Check className="w-3 h-3 text-white" />
-                    </div>
-                    <p className="text-sm text-gray-700 font-medium">High engagement audience</p>
-                  </div>
-                  <div className="flex items-start gap-3">
-                    <div className="w-5 h-5 rounded-full bg-indigo-600 flex items-center justify-center flex-shrink-0 mt-0.5">
-                      <Check className="w-3 h-3 text-white" />
-                    </div>
-                    <p className="text-sm text-gray-700 font-medium">Brand-safe content</p>
-                  </div>
-                  <div className="flex items-start gap-3">
-                    <div className="w-5 h-5 rounded-full bg-indigo-600 flex items-center justify-center flex-shrink-0 mt-0.5">
-                      <Check className="w-3 h-3 text-white" />
-                    </div>
-                    <p className="text-sm text-gray-700 font-medium">Strong storytelling</p>
-                  </div>
-                  {(kitData?.profile?.niche || creator?.niche) && (
-                    <div className="flex items-start gap-3">
-                      <div className="w-5 h-5 rounded-full bg-indigo-600 flex items-center justify-center flex-shrink-0 mt-0.5">
-                        <Check className="w-3 h-3 text-white" />
-                      </div>
-                      <p className="text-sm text-gray-700 font-medium">{(kitData?.profile?.niche || creator?.niche)} audience</p>
-                    </div>
+              {/* Last updated + Sync now */}
+              <div className="flex items-center justify-between mt-3">
+                <p className="text-[11px] text-[#64748B]">
+                  {updatedAt
+                    ? `Last updated ${new Date(updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+                    : 'Last updated —'}
+                </p>
+                <Button
+                  variant="secondary"
+                  onClick={handleSyncNow}
+                  disabled={syncing}
+                  className="text-xs py-2"
+                >
+                  {syncing ? (
+                    <>
+                      <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                      Syncing…
+                    </>
+                  ) : (
+                    'Sync now'
                   )}
+                </Button>
+              </div>
+              {syncError && (
+                <p className="text-xs text-red-600 mt-2">{syncError}</p>
+              )}
+              {/* AI profile: Refresh analysis */}
+              <div className="flex items-center justify-between mt-3">
+                <p className="text-[11px] text-[#64748B]">
+                  {aiProfile?.last_analysis_status === 'ok'
+                    ? `Profile analyzed ${aiProfile.updated_at ? new Date(aiProfile.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : ''}`
+                    : aiProfile?.last_analysis_error
+                      ? 'Profile analysis failed'
+                      : 'AI creator profile'}
+                </p>
+                <Button
+                  variant="ghost"
+                  onClick={handleRefreshAnalysis}
+                  disabled={analyzing}
+                  className="text-xs py-2"
+                >
+                  {analyzing ? (
+                    <>
+                      <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                      Analyzing…
+                    </>
+                  ) : (
+                    'Refresh analysis'
+                  )}
+                </Button>
+              </div>
+              {analysisError && (
+                <div className="mt-3 p-3 rounded-lg bg-red-50 border border-red-200 text-red-800 text-sm" role="alert">
+                  <p className="font-medium">Analysis failed</p>
+                  <p className="mt-1">{analysisError}</p>
+                </div>
+              )}
+            </div>
+
+            {/* About (AI bio) */}
+            {aiProfile?.bio && (
+              <div>
+                <SectionLabel className="mb-3">About</SectionLabel>
+                <div className="bg-white border border-[rgba(15,23,42,0.06)] rounded-[14px] p-5">
+                  <p className="text-[14px] text-[#0F172A] leading-relaxed whitespace-pre-wrap">{aiProfile.bio}</p>
                 </div>
               </div>
+            )}
 
-              {/* Top Content Section - Visual Cards */}
-              {kitData.topContent && kitData.topContent.length > 0 && (
-                <div>
-                  <h3 className="text-xs font-semibold text-gray-900 mb-4 tracking-wide uppercase">Top Content</h3>
-                  <div className="space-y-4">
-                    {kitData.topContent.slice(0, 5).map((content: any, i: number) => (
-                      <div key={i} className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex items-center gap-4">
-                        <div className="w-24 h-24 bg-gradient-to-br from-indigo-200 via-purple-200 to-pink-200 rounded-xl flex-shrink-0 flex items-center justify-center overflow-hidden shadow-sm">
-                          {content.thumbnailUrl ? (
-                            <img src={content.thumbnailUrl} alt={content.title} className="w-full h-full object-cover" />
+            {/* Content themes (AI) */}
+            {aiProfile?.themes && aiProfile.themes.length > 0 && (
+              <div>
+                <SectionLabel className="mb-3">Content themes</SectionLabel>
+                <div className="flex flex-wrap gap-2">
+                  {aiProfile.themes.map((theme: string, i: number) => (
+                    <span key={i} className="px-3 py-1.5 bg-[#F1F5F9] text-[13px] text-[#0F172A] rounded-full">
+                      {theme}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Ideal brand partners (AI) */}
+            {aiProfile?.brand_fit && aiProfile.brand_fit.length > 0 && (
+              <div>
+                <SectionLabel className="mb-3">Ideal brand partners</SectionLabel>
+                <div className="bg-white border border-[rgba(15,23,42,0.06)] rounded-[14px] p-5">
+                  <ul className="space-y-2">
+                    {aiProfile.brand_fit.map((item: { category: string; reasoning?: string }, i: number) => (
+                      <li key={i} className="flex flex-col gap-0.5">
+                        <span className="text-[14px] font-medium text-[#0F172A]">{item.category}</span>
+                        {item.reasoning && (
+                          <span className="text-[12px] text-[#64748B]">{item.reasoning}</span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            )}
+
+            {/* Collab types (AI) */}
+            {aiProfile?.suggested_collab_types && aiProfile.suggested_collab_types.length > 0 && (
+              <div>
+                <SectionLabel className="mb-3">Collab types</SectionLabel>
+                <div className="flex flex-wrap gap-2">
+                  {aiProfile.suggested_collab_types.map((type: string, i: number) => (
+                    <span key={i} className="px-3 py-1.5 bg-[#EEF2FF] text-[13px] text-[#4338CA] rounded-full">
+                      {type}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* No AI profile yet - show CTA */}
+            {!aiProfile?.headline && !analyzing && (
+              <div className="bg-[#F8FAFC] border border-[rgba(15,23,42,0.06)] rounded-[14px] p-5">
+                <p className="text-[13px] text-[#64748B] mb-3">Generating your creator profile… We analyze your content to build a headline, themes, and brand fit.</p>
+                <Button variant="secondary" onClick={handleRefreshAnalysis} disabled={analyzing} className="text-sm">
+                  {analyzing ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Analyzing…</> : 'Refresh analysis'}
+                </Button>
+              </div>
+            )}
+
+            {/* Platforms - compact row */}
+            {kitData.platforms && kitData.platforms.length > 0 && (
+              <div>
+                <SectionLabel className="mb-3">Platforms</SectionLabel>
+                <div className="space-y-2">
+                  {kitData.platforms.map((platform: any, i: number) => (
+                    <div key={i} className="bg-white border border-[rgba(15,23,42,0.06)] rounded-[14px] p-4">
+                      <div className="flex items-center gap-4">
+                        <div className={`w-10 h-10 rounded-[10px] flex items-center justify-center flex-shrink-0 ${
+                          platform.platform === 'youtube' ? 'bg-[#FF0000]' :
+                          platform.platform === 'tiktok' ? 'bg-[#000000]' :
+                          'bg-gradient-to-br from-[#833AB4] via-[#E1306C] to-[#FD1D1D]'
+                        }`}>
+                          {platform.platform === 'youtube' ? (
+                            <Youtube className="w-[22px] h-[22px] text-white" />
+                          ) : platform.platform === 'tiktok' ? (
+                            <span className="text-xl">🎵</span>
                           ) : (
-                            <span className="text-3xl">🎬</span>
+                            <Instagram className="w-[22px] h-[22px] text-white" />
                           )}
                         </div>
                         <div className="flex-1 min-w-0">
-                          <p className="text-sm font-semibold text-gray-900 line-clamp-2 mb-2 leading-snug">{content.title || 'Untitled'}</p>
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs text-gray-500 capitalize px-2 py-0.5 bg-gray-100 rounded-full">{content.platform || 'YouTube'}</span>
-                            <span className="text-base font-semibold text-gray-900">{content.views?.toLocaleString() || '--'} views</span>
+                          <p className="text-[14px] font-semibold text-[#0F172A]">
+                            {platform.platform === 'youtube' ? 'YouTube' : platform.platform === 'tiktok' ? 'TikTok' : platform.platform}
+                          </p>
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[12px] text-[#64748B]">
+                            <span>{platform.followers != null && platform.followers > 0 ? `${formatMediaKitCount(platform.followers)} subscribers` : 'Not available'}</span>
+                            <span>·</span>
+                            <span>{platform.avg_views_10 != null && platform.avg_views_10 > 0 ? `${formatMediaKitCount(platform.avg_views_10)} avg views` : 'Not available'}</span>
+                          </div>
+                        </div>
+                        {updatedAt && (
+                          <p className="text-[10px] text-[#94A3B8] flex-shrink-0 hidden sm:block">
+                            Updated {new Date(updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Why Brands Work With Me */}
+            <div>
+              <SectionLabel className="mb-3">Why brands work with me</SectionLabel>
+              <div className="bg-white border border-[rgba(15,23,42,0.06)] rounded-[14px] p-5">
+                <ul className="space-y-3">
+                  {whyBrands.map((item, index) => (
+                    <li key={index} className="flex items-start gap-3">
+                      <div className="w-1.5 h-1.5 rounded-full bg-[#0F172A] mt-2 flex-shrink-0" />
+                      <span className="text-[14px] text-[#0F172A] leading-relaxed">{item}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+
+            {/* Brand Fit */}
+            <div>
+              <SectionLabel className="mb-3">Brand fit</SectionLabel>
+              <div className="bg-white border border-[rgba(15,23,42,0.06)] rounded-[14px] p-5">
+                <ul className="space-y-3">
+                  {brandFit.map((item, index) => (
+                    <li key={index} className="flex items-start gap-3">
+                      <div className="w-1.5 h-1.5 rounded-full bg-[#0F172A] mt-2 flex-shrink-0" />
+                      <span className="text-[14px] text-[#0F172A] leading-relaxed">{item}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+
+            {/* Top Content - thumbnails derived from YouTube video_id (i.ytimg.com), no DB thumbnail */}
+            {kitData.topContent && kitData.topContent.length > 0 && (
+              <div>
+                <SectionLabel className="mb-3">Top Content</SectionLabel>
+                <div className="space-y-3">
+                  {kitData.topContent.slice(0, 3).map((content: any, i: number) => {
+                    const videoId = content.video_id ?? content.videoId ?? getYoutubeVideoId(content?.url);
+                    const thumbnailUrl = videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : null;
+                    return (
+                      <div key={i} className="bg-white border border-[rgba(15,23,42,0.06)] rounded-[14px] p-4">
+                        <div className="flex gap-3">
+                          <div className="w-24 h-16 rounded-[10px] flex-shrink-0 overflow-hidden bg-gray-100">
+                            {thumbnailUrl ? (
+                              <img
+                                src={thumbnailUrl}
+                                alt=""
+                                className="w-full h-full object-cover rounded-[10px]"
+                              />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center">
+                                <Youtube className="w-8 h-8 text-red-500" />
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex-1">
+                            <p className="text-[14px] font-medium text-[#0F172A] mb-1 leading-snug line-clamp-2">
+                              {content.title || 'Untitled'}
+                            </p>
+                            <p className="text-[12px] text-[#64748B]">
+                              {content.views > 0 ? `${formatMediaKitCount(content.views)} views` : 'Not available'}
+                            </p>
                           </div>
                         </div>
                       </div>
-                    ))}
-                  </div>
+                    );
+                  })}
                 </div>
-              )}
-
-              {kitData.suggestedRateRange && (
-                <div className="bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 rounded-2xl p-6 text-white shadow-xl">
-                  <p className="text-xs text-white/90 mb-2 tracking-wide uppercase font-medium">Suggested Rate Range</p>
-                  <p className="text-2xl font-semibold">
-                    ${kitData.suggestedRateRange.min?.toLocaleString() || '0'} - ${kitData.suggestedRateRange.max?.toLocaleString() || '0'} {kitData.suggestedRateRange.currency || 'USD'}
-                  </p>
-                </div>
-              )}
-            </>
-          ) : null}
-
-            </div>
-          </Container>
-        </Screen>
-        
-        {/* CTA Footer - Sticky outside scroll content */}
-        <StickyFooterCTA 
-          onCopy={copyToClipboard}
-          onShare={() => {
-            if (navigator.share) {
-              navigator.share({ title: 'Media Kit', url: shareUrl }).catch(() => {});
-            } else {
-              copyToClipboard();
-            }
-          }}
-          copied={copied}
-          shareUrl={shareUrl}
-        />
+              </div>
+            )}
+          </>
+        ) : null}
       </div>
-    </PhoneModal>
+      </div>
+
+      {/* Fixed bottom action bar - does not scroll */}
+      {kitData && kitData.status === 'ready' && (
+        <div className="flex-shrink-0 fixed bottom-0 left-0 right-0 bg-white border-t border-[rgba(15,23,42,0.08)] px-6 py-4 shadow-[0_-2px_10px_rgba(15,23,42,0.04)]">
+          <div className="max-w-[390px] mx-auto">
+            <p className="text-[12px] text-[#64748B] text-center mb-3">
+              Available for partnerships
+            </p>
+            <div className="flex gap-3">
+              <Button variant="secondary" className="flex-1" onClick={copyToClipboard}>
+                <Copy className="w-4 h-4 mr-2" />
+                Copy link
+              </Button>
+              <Button 
+                variant="primary" 
+                className="flex-1"
+                onClick={() => {
+                  if (navigator.share) {
+                    navigator.share({ title: 'Media Kit', url: shareUrl }).catch(() => {});
+                  } else {
+                    copyToClipboard();
+                  }
+                }}
+              >
+                <Share2 className="w-4 h-4 mr-2" />
+                Share
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 };
 
@@ -2314,15 +2544,63 @@ const ConnectSocialsPanel = ({ userId }: { userId: string }) => {
   );
 };
 
-// Creator Home - Mobile-first, action-driven redesign
-const CreatorHome = ({ onNavigate, onShowNotifications }: { onNavigate: (tab: string) => void; onShowNotifications: () => void }) => {
+// Connect Platforms screen (gate): shown when user has no connected platforms
+const ConnectPlatformsScreen = () => {
   const { user } = useAuth();
   const userData = useUserData();
+
+  // Refetch when returning from OAuth so gate can re-check and show app
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && user?.id) {
+        userData.refreshSilently();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [user?.id, userData]);
+
+  return (
+    <div className="flex flex-col h-full w-full bg-white p-6 pt-16">
+      <p className="text-[15px] text-[#64748B] mb-6">
+        Connect at least one account to personalize your experience.
+      </p>
+      <ConnectSocialsPanel userId={user?.id ?? ''} />
+    </div>
+  );
+};
+
+// Gate: show Connect until at least one platform is connected; otherwise show main app tabs
+const AppGate = ({ tabContent }: { tabContent: React.ReactNode }) => {
+  const userData = useUserData();
+  const stillLoading = userData.socialAccounts === null;
+  const hasConnectedPlatform = (userData.socialAccounts?.length ?? 0) > 0;
+
+  if (stillLoading) {
+    return (
+      <div className="h-full w-full bg-white flex items-center justify-center">
+        <Loader2 className="animate-spin text-indigo-600" size={32} />
+      </div>
+    );
+  }
+  if (!hasConnectedPlatform) {
+    return <ConnectPlatformsScreen />;
+  }
+  return <>{tabContent}</>;
+};
+
+// Creator Home - Mobile-first, action-driven redesign
+const CreatorHome = ({ onNavigate, onShowNotifications, onShowMediaKit }: { onNavigate: (tab: string) => void; onShowNotifications: () => void; onShowMediaKit?: () => void }) => {
+  const { user } = useAuth();
+  const userData = useUserData();
+  const creatorAiProfile = userData.creatorAiProfile;
+  const { profile: onboardingProfile } = useOnboarding();
   const [xp, setXp] = useState(150);
   const [weeklyStreak, setWeeklyStreak] = useState(3);
   const [objectives, setObjectives] = useState<Array<{ id: number; text: string; xp: number; completed: boolean }>>([]);
   const [suggestedRate, setSuggestedRate] = useState<{ min: number; max: number } | null>(null);
   const [showSocialConnect, setShowSocialConnect] = useState(false);
+  const [userName, setUserName] = useState<string>('');
 
   // Use data from store
   const creatorMetrics = userData.creatorMetrics || [];
@@ -2429,377 +2707,185 @@ const CreatorHome = ({ onNavigate, onShowNotifications }: { onNavigate: (tab: st
     }
   }, [user, creatorProfile]);
 
-  const currentTier = getCurrentTier(xp);
-  const { progress, nextTier, xpNeeded } = getProgressToNextTier(xp);
-  const completedCount = objectives.filter(o => o.completed).length;
-
-  // Get YouTube metrics for hero
-  const youtubeMetrics = creatorMetrics.find(m => m.platform === 'youtube');
-  const hasMetrics = youtubeMetrics && youtubeMetrics.followers > 0;
-  const sizeTier = creatorProfile?.size_tier || 'nano';
-  const engagementRate = youtubeMetrics?.engagement_rate_10 || 0;
-  
-  // Interpret engagement (top 18% is > 5%, top 10% is > 7%, top 5% is > 10%)
-  const getEngagementLabel = (rate: number): string => {
-    if (rate >= 10) return 'Top 5% engagement';
-    if (rate >= 7) return 'Top 10% engagement';
-    if (rate >= 5) return 'Top 18% engagement';
-    if (rate >= 3) return 'Above average engagement';
-    return 'Growing engagement';
-  };
-
-  // Get recommended action
-  const getRecommendedAction = () => {
-    if (!hasMetrics) {
-      return {
-        text: 'Connect a social account',
-        xp: 0,
-        action: () => setShowSocialConnect(true),
-        why: 'Connect your account to unlock personalized brand matches',
-      };
-    }
-    if (brandRecommendationsCount > 0) {
-      return {
-        text: `Pitch ${brandRecommendationsCount} new match${brandRecommendationsCount !== 1 ? 'es' : ''}`,
-        xp: 25,
-        action: () => onNavigate('discover'),
-        why: 'New brand matches are waiting. Send your first pitch to start closing deals.',
-      };
-    }
-    if (pitchesCount.draft > 0) {
-      return {
-        text: `Send ${pitchesCount.draft} draft pitch${pitchesCount.draft !== 1 ? 'es' : ''}`,
-        xp: 25,
-        action: () => onNavigate('deals'),
-        why: 'You have draft pitches ready. Send them to start conversations with brands.',
-      };
-    }
-    if (pitchesCount.sent === 0 && pitchesCount.draft === 0) {
-      return {
-        text: 'Send your first pitch',
-        xp: 25,
-        action: () => onNavigate('discover'),
-        why: 'Start pitching brands to land your first deal. Every pitch is a step closer.',
-      };
-    }
-    return {
-      text: 'Generate more brand matches',
-      xp: 0,
-      action: () => onNavigate('discover'),
-      why: 'Find more brands that match your content and audience size.',
+  // Fetch user name for welcome message
+  useEffect(() => {
+    const fetchUserName = async () => {
+      if (!user) return;
+      try {
+        const { supabase } = await import('../lib/supabaseClient');
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('name')
+          .eq('id', user.id)
+          .maybeSingle();
+        if (profile?.name) {
+          setUserName(profile.name);
+        } else if (onboardingProfile?.name) {
+          setUserName(onboardingProfile.name);
+        } else {
+          setUserName(user.email?.split('@')[0] || 'Creator');
+        }
+      } catch (err) {
+        console.error('Failed to fetch user name:', err);
+        setUserName(user.email?.split('@')[0] || 'Creator');
+      }
     };
+    fetchUserName();
+  }, [user, onboardingProfile]);
+
+  // Creator Snapshot: same source as Profile (userData.creatorMetrics)
+  const youtubeMetrics = creatorMetrics.find(m => m.platform === 'youtube');
+  const hasMetrics = youtubeMetrics && (
+    (youtubeMetrics.followers ?? 0) > 0 ||
+    (youtubeMetrics.avg_views_10 ?? 0) > 0 ||
+    (youtubeMetrics.engagement_rate_10 ?? 0) > 0
+  );
+  const engagementRate = youtubeMetrics?.engagement_rate_10 ?? 0;
+  // Format like Profile: show actual number; use "X.XK" only when >= 1000
+  const formatCount = (n: number | undefined | null) => {
+    const val = n ?? 0;
+    if (val >= 1000) return `${(val / 1000).toFixed(1)}K`;
+    return val.toLocaleString();
   };
-
-  // Get dynamic hero CTA based on priority
-  const getHeroCTA = () => {
-    if (connectedPlatforms.length === 0) {
-      return {
-        label: 'Connect a social account',
-        context: 'Connect one account to unlock matches',
-        action: () => setShowSocialConnect(true),
-      };
-    } else if (brandRecommendationsCount > 0) {
-      return {
-        label: 'Review new matches',
-        context: `You have ${brandRecommendationsCount} new match${brandRecommendationsCount !== 1 ? 'es' : ''} ready`,
-        action: () => onNavigate('discover'),
-      };
-    } else if (pitchesCount.draft > 0) {
-      return {
-        label: 'Finish your draft',
-        context: `${pitchesCount.draft} draft${pitchesCount.draft !== 1 ? 's' : ''} waiting to be sent`,
-        action: () => onNavigate('deals'),
-      };
-    } else {
-      return {
-        label: 'Generate matches',
-        context: 'Find brands that match your content and audience',
-        action: () => onNavigate('discover'),
-      };
-    }
-  };
-
-  const heroCTA = getHeroCTA();
-
-  // Get next actions checklist items
-  const getNextActions = () => {
-    const actions = [];
-    
-    // Connect TikTok if not connected
-    if (!connectedPlatforms.includes('tiktok')) {
-      actions.push({
-        id: 'connect-tiktok',
-        text: 'Connect TikTok',
-        xp: 10,
-        action: () => user && (window.location.href = `/api/oauth/tiktok/start?userId=${user.id}`),
-        completed: false,
-      });
-    }
-    
-    // Pitch a match if matches exist
-    if (brandRecommendationsCount > 0) {
-      actions.push({
-        id: 'pitch-match',
-        text: `Pitch ${brandRecommendationsCount} match${brandRecommendationsCount !== 1 ? 'es' : ''}`,
-        xp: 25,
-        action: () => onNavigate('discover'),
-        completed: false,
-      });
-    }
-    
-    // Follow up if sent pitches exist
-    const needsFollowUp = pitchesCount.sent > 0 && pitchesCount.replied === 0;
-    if (needsFollowUp || followups.length > 0) {
-      actions.push({
-        id: 'follow-up',
-        text: `Follow up ${followups.length > 0 ? followups.length : pitchesCount.sent} pitch${(followups.length > 0 ? followups.length : pitchesCount.sent) !== 1 ? 'es' : ''}`,
-        xp: 15,
-        action: () => onNavigate('deals'),
-        completed: false,
-      });
-    }
-    
-    return actions.slice(0, 3); // Max 3 items
-  };
-
-  const nextActions = getNextActions();
-  const primaryAction = nextActions[0];
+  
+  // Calculate rate range
+  const rateRange = suggestedRate ? `$${(suggestedRate.min / 1000).toFixed(1)}K–$${(suggestedRate.max / 1000).toFixed(1)}K per post` : null;
 
   return (
-    <Screen scroll={true}>
-      <Container className="pt-4 pb-6 space-y-4">
-        {/* 1. Next Best Action Hero */}
-        <div className="relative overflow-hidden bg-gradient-to-br from-indigo-600 to-purple-600 rounded-xl p-5 text-white shadow-lg">
-          <div className="relative z-10">
-            <h1 className="text-lg font-semibold mb-1.5">{heroCTA.label}</h1>
-            <p className="text-xs text-indigo-100 mb-4">{heroCTA.context}</p>
-            <button
-              type="button"
-              onClick={heroCTA.action}
-              className="w-full bg-white text-indigo-600 font-semibold py-3 px-4 rounded-xl shadow-lg active:scale-[0.99] transition-transform"
-              style={{ minHeight: '44px', boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)' }}
-            >
-              {heroCTA.label}
-            </button>
+    <div className="min-h-screen bg-white pb-28">
+      <div className="px-6 pt-16 pb-6">
+        <h1 className="text-[28px] font-semibold text-[#0F172A] mb-1">
+          Welcome back
+        </h1>
+        <p className="text-[15px] text-[#64748B]">
+          {userName || 'Creator'}
+        </p>
+      </div>
+
+      <div className="px-6 space-y-8">
+        {/* Primary Focus Block */}
+        <div className="bg-[#F8F9FB] rounded-[16px] p-5">
+          <div className="flex items-start justify-between mb-3">
+            <div className="flex-1">
+              <p className="text-[12px] font-semibold text-[#64748B] uppercase tracking-[0.06em] mb-2">
+                Your next step
+              </p>
+              <h3 className="text-[16px] font-semibold text-[#0F172A] mb-1">
+                Generate brand matches
+              </h3>
+              <p className="text-[13px] text-[#64748B]">
+                Recommended next step
+              </p>
+            </div>
           </div>
-          {/* Subtle decorative overlay */}
-          <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full -mr-16 -mt-16 blur-2xl" />
-          <div className="absolute bottom-0 left-0 w-24 h-24 bg-white/5 rounded-full -ml-12 -mb-12 blur-2xl" />
-        </div>
-
-        {/* 2. Status Strip - Horizontally scrollable */}
-        <div 
-          className="flex gap-2 overflow-x-auto no-scrollbar -mx-5 pl-5 pr-5 pb-2"
-          style={{ WebkitOverflowScrolling: 'touch', scrollPaddingLeft: '1.25rem', scrollPaddingRight: '1.25rem' }}
-        >
-          {/* Platforms - Clickable to open connect accounts */}
           <button
-            type="button"
-            onClick={() => setShowSocialConnect(!showSocialConnect)}
-            className="flex items-center gap-1.5 px-3 py-2 bg-white border border-gray-200 rounded-lg shrink-0 active:border-indigo-200 active:bg-indigo-50 transition-colors"
+            onClick={() => {
+              const hasAny = (userData.socialAccounts?.length ?? 0) > 0;
+              if (!hasAny) return; // Gate keeps them off Home until connected; no-op if somehow here
+              onNavigate('discover');
+            }}
+            className="flex items-center gap-2 text-[14px] font-semibold text-[#0F172A] mt-3"
           >
-            <Youtube size={14} className="text-red-600 shrink-0" />
-            <span className="text-xs font-medium text-gray-700 whitespace-nowrap">
-              {connectedPlatforms.length}/3 connected
-            </span>
+            Start now
+            <ArrowRight className="w-4 h-4" />
           </button>
-          
-          {/* Matches */}
-          {brandRecommendationsCount > 0 && (
-            <button
-              type="button"
-              onClick={() => onNavigate('discover')}
-              className="flex items-center gap-1.5 px-3 py-2 bg-indigo-50 border border-indigo-200 rounded-lg shrink-0 active:bg-indigo-100 transition-colors"
-            >
-              <Sparkles size={14} className="text-indigo-600 shrink-0" />
-              <span className="text-xs font-medium text-indigo-900 whitespace-nowrap">
-                {brandRecommendationsCount} match{brandRecommendationsCount !== 1 ? 'es' : ''}
-              </span>
-            </button>
-          )}
-          
-          {/* Drafts */}
-          {pitchesCount.draft > 0 && (
-            <button
-              type="button"
-              onClick={() => onNavigate('deals')}
-              className="flex items-center gap-1.5 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg shrink-0 active:bg-amber-100 transition-colors"
-            >
-              <FileText size={14} className="text-amber-600 shrink-0" />
-              <span className="text-xs font-medium text-amber-900 whitespace-nowrap">
-                {pitchesCount.draft} draft{pitchesCount.draft !== 1 ? 's' : ''}
-              </span>
-            </button>
-          )}
-          
-          {/* Estimated Rate */}
-          {suggestedRate && (
-            <div className="flex items-center gap-1.5 px-3 py-2 bg-green-50 border border-green-200 rounded-lg shrink-0">
-              <DollarSign size={14} className="text-green-600 shrink-0" />
-              <span className="text-xs font-medium text-green-900 whitespace-nowrap">
-                ${suggestedRate.min}–{suggestedRate.max}/post
-              </span>
-            </div>
-          )}
-          
-          {/* Right fade overlay */}
-          <div className="sticky right-0 top-0 h-full w-8 bg-gradient-to-l from-white to-transparent pointer-events-none z-10 flex-shrink-0" />
         </div>
 
-        {/* 3. Next Actions Checklist Card */}
-        {nextActions.length > 0 && (
-          <div className="p-4 bg-white border border-gray-200 rounded-xl shadow-sm">
-            <div className="flex items-center gap-2 mb-3">
-              <Target size={16} className="text-indigo-600 shrink-0" />
-              <h3 className="text-sm font-semibold text-gray-900">Next Actions</h3>
-            </div>
-            
-            <div className="space-y-2.5 mb-4">
-              {nextActions.map((action) => (
-                <div key={action.id} className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 flex-1 min-w-0">
-                    <div className="w-5 h-5 rounded-full border-2 border-gray-300 flex-shrink-0" />
-                    <span className="text-xs font-medium text-gray-700 truncate">{action.text}</span>
-                  </div>
-                  <span className="text-xs font-medium text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full shrink-0 whitespace-nowrap">
-                    +{action.xp} XP
-                  </span>
-                </div>
-              ))}
-            </div>
-            
-            {primaryAction && (
+        {/* Your creator profile (AI) - personalization from creator_ai_profiles */}
+        {creatorAiProfile && onShowMediaKit && (
+          <div className="bg-white border border-[rgba(15,23,42,0.06)] rounded-[16px] p-5">
+            <p className="text-[12px] font-semibold text-[#64748B] uppercase tracking-[0.06em] mb-2">Your creator profile</p>
+            <p className="text-[15px] font-medium text-[#0F172A] mb-2">
+              {creatorAiProfile?.headline ?? 'Profile ready — view in Media Kit'}
+            </p>
+            {onShowMediaKit && (
               <button
                 type="button"
-                onClick={primaryAction.action}
-                className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-semibold py-2.5 px-4 rounded-lg shadow-sm active:scale-[0.99] transition-transform"
-                style={{ minHeight: '44px' }}
+                onClick={onShowMediaKit}
+                className="text-[13px] font-medium text-indigo-600"
               >
-                {primaryAction.text}
+                View media kit →
               </button>
             )}
           </div>
         )}
 
-        {/* Compact Social Connect (if not all connected) - Hidden in main flow, shown in checklist */}
-        {connectedPlatforms.length < 3 && showSocialConnect && (
-          <div className="space-y-2">
-            <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-              {!connectedPlatforms.includes('youtube') && (
-                <Button
-                  variant="secondary"
-                  onClick={() => user && (window.location.href = `/api/oauth/youtube/start?userId=${user.id}`)}
-                  className="w-full text-xs py-2.5 flex items-center justify-center gap-2 rounded-none border-b border-gray-200"
-                >
-                  <Youtube size={16} />
-                  Connect YouTube
-                </Button>
-              )}
-              
-              {/* TikTok Row */}
-              {connectedPlatforms.includes('tiktok') ? (
-                <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 last:border-b-0">
-                  <div className="flex items-center gap-3 flex-1 min-w-0">
-                    <svg className="w-5 h-5 text-gray-900 flex-shrink-0" viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.64 2.93 2.93 0 0 1 .88.13V9.4a6.84 6.84 0 0 0-1-.05A6.33 6.33 0 0 0 5 20.1a6.34 6.34 0 0 0 10.86-4.43v-7a8.16 8.16 0 0 0 4.77 1.52v-3.4a4.85 4.85 0 0 1-1-.1z"/>
-                    </svg>
-                    <span className="text-sm font-medium text-gray-700">TikTok</span>
+        {/* Connected Platforms: connect dropdown (YouTube, TikTok, Instagram coming soon) */}
+        <div>
+          <SectionLabel className="mb-4">Connected Platforms</SectionLabel>
+          <ConnectSocialsPanel userId={user?.id ?? ''} />
+        </div>
+
+        {/* Creator Snapshot */}
+        {hasMetrics && youtubeMetrics && (
+          <div>
+            <SectionLabel className="mb-4">Creator Snapshot</SectionLabel>
+            <div className="bg-[#F8F9FB] rounded-[16px] p-5">
+              <div className="grid grid-cols-3 gap-4 mb-4">
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <Users className="w-[22px] h-[22px] text-[#64748B]" />
                   </div>
-                  <div className="flex items-center gap-2">
-                    <CheckCircle2 size={16} className="text-green-600 flex-shrink-0" />
-                    <span className="text-xs font-medium text-green-700 whitespace-nowrap ml-1">
-                      Connected
-                    </span>
+                  <p className="text-[11px] text-[#64748B] uppercase tracking-[0.06em] mb-1">Subscribers</p>
+                  <p className="text-[20px] font-semibold text-[#0F172A]">
+                    {formatCount(youtubeMetrics.followers)}
+                  </p>
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <Eye className="w-[22px] h-[22px] text-[#64748B]" />
                   </div>
+                  <p className="text-[11px] text-[#64748B] uppercase tracking-[0.06em] mb-1">Avg Views</p>
+                  <p className="text-[20px] font-semibold text-[#0F172A]">
+                    {formatCount(youtubeMetrics.avg_views_10)}
+                  </p>
                 </div>
-              ) : (
-                <Button
-                  variant="secondary"
-                  onClick={() => user && (window.location.href = `/api/oauth/tiktok/start?userId=${user.id}`)}
-                  className="w-full text-xs py-2.5 flex items-center justify-center gap-2 rounded-none border-b border-gray-200"
-                >
-                  <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.64 2.93 2.93 0 0 1 .88.13V9.4a6.84 6.84 0 0 0-1-.05A6.33 6.33 0 0 0 5 20.1a6.34 6.34 0 0 0 10.86-4.43v-7a8.16 8.16 0 0 0 4.77 1.52v-3.4a4.85 4.85 0 0 1-1-.1z"/>
-                  </svg>
-                  Connect TikTok
-                </Button>
-              )}
-              
-              {/* Instagram Row */}
-              <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 last:border-b-0 opacity-75">
-                <div className="flex items-center gap-3 flex-1 min-w-0">
-                  <Instagram size={20} className="text-gray-400 flex-shrink-0" />
-                  <span className="text-sm font-medium text-gray-700">Instagram</span>
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <TrendingUp className="w-[22px] h-[22px] text-[#64748B]" />
+                  </div>
+                  <p className="text-[11px] text-[#64748B] uppercase tracking-[0.06em] mb-1">Engagement</p>
+                  <p className="text-[20px] font-semibold text-[#0F172A]">
+                    {engagementRate > 0 ? `${engagementRate.toFixed(2)}%` : '—'}
+                  </p>
                 </div>
-                <span className="text-xs font-medium text-gray-500 bg-gray-200 px-2 py-0.5 rounded-full whitespace-nowrap ml-2">
-                  Coming soon
-                </span>
+              </div>
+              <div className="flex items-center gap-1.5 pt-3 border-t border-[rgba(15,23,42,0.06)]">
+                <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                <p className="text-[12px] text-[#64748B]">Same data as Profile · updates together</p>
               </div>
             </div>
           </div>
         )}
 
-        {/* 4. Creator Snapshot Card */}
-        {hasMetrics && youtubeMetrics && (
-          <div className="p-4 bg-white border border-gray-200 rounded-xl shadow-sm">
-            <h3 className="text-sm font-semibold text-gray-900 mb-3">Creator Snapshot</h3>
-            
-            {/* Stats Row */}
-            <div className="grid grid-cols-3 gap-3 mb-3">
-              <div className="text-center">
-                <p className="text-lg font-bold text-gray-900">
-                  {(youtubeMetrics.followers || 0).toLocaleString()}
-                </p>
-                <p className="text-xs text-gray-500">Subs</p>
-              </div>
-              <div className="text-center">
-                <p className="text-lg font-bold text-gray-900">
-                  {(youtubeMetrics.avg_views_10 || 0).toLocaleString()}
-                </p>
-                <p className="text-xs text-gray-500">Avg views</p>
-              </div>
-              <div className="text-center">
-                <p className="text-lg font-bold text-gray-900">
-                  {engagementRate.toFixed(1)}%
-                </p>
-                <p className="text-xs text-gray-500">Engagement</p>
-              </div>
+        {/* Next Actions */}
+        <div>
+          <SectionLabel className="mb-4">Next Actions</SectionLabel>
+          <div className="bg-white border border-[rgba(15,23,42,0.06)] rounded-[14px] divide-y divide-[rgba(15,23,42,0.06)]">
+            <div className="px-4">
+              <ListRow
+                icon={FileText}
+                iconBg="bg-[#F8FAFC]"
+                iconColor="text-[#0F172A]"
+                title="Update your media kit"
+                showChevron
+                onClick={() => onNavigate('profile')}
+              />
             </div>
-            
-            {/* Insight Pill */}
-            <div className="flex justify-center mb-3">
-              <span className="text-xs font-medium text-indigo-700 bg-indigo-50 px-3 py-1 rounded-full">
-                {getEngagementLabel(engagementRate)}
-              </span>
-            </div>
-            
-            {/* Best For Chips */}
-            <div className="flex flex-wrap gap-1.5 justify-center">
-              {(sizeTier === 'nano' || sizeTier === 'micro') && (
-                <>
-                  <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-medium shrink-0">
-                    Gifted deals
-                  </span>
-                  <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-medium shrink-0">
-                    Affiliate programs
-                  </span>
-                </>
-              )}
-              {sizeTier === 'mid' && (
-                <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium shrink-0">
-                  Paid partnerships
-                </span>
-              )}
-              {sizeTier === 'large' && (
-                <span className="text-xs bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full font-medium shrink-0">
-                  Premium brand deals
-                </span>
-              )}
+            <div className="px-4">
+              <ListRow
+                icon={Sparkles}
+                iconBg="bg-[#F8FAFC]"
+                iconColor="text-[#0F172A]"
+                title="Generate brand matches"
+                showChevron
+                onClick={() => onNavigate('discover')}
+              />
             </div>
           </div>
-        )}
-      </Container>
-    </Screen>
+        </div>
+      </div>
+    </div>
   );
 };
 
@@ -3342,6 +3428,75 @@ const CreatorDiscover = () => {
     setParsedRecommendations(parsed);
   }, [recommendations, sizeTier]);
 
+  // Fetch brand contacts for all recommendations (must run unconditionally to avoid hook order changes)
+  useEffect(() => {
+    if (!recommendations || recommendations.length === 0) {
+      return;
+    }
+
+    const fetchBrandContacts = async () => {
+      const contactsMap: Record<string, any> = {};
+      
+      await Promise.all(
+        recommendations.map(async (brand: any) => {
+          try {
+            const response = await fetch(`/api/enrich/get-contacts?brandName=${encodeURIComponent(brand.brand_name)}`);
+            if (response.ok) {
+              const data = await response.json();
+              contactsMap[brand.id] = data;
+            }
+          } catch (error) {
+            console.error(`[Discover] Error fetching contacts for ${brand.brand_name}:`, error);
+          }
+        })
+      );
+
+      setBrandContacts(contactsMap);
+    };
+
+    fetchBrandContacts();
+  }, [recommendations]);
+
+  // Poll for updates every 5 seconds if any brands are pending enrichment
+  useEffect(() => {
+    const hasPending = Object.values(brandContacts).some(c => c?.status === 'pending');
+    if (!hasPending) {
+      return;
+    }
+
+    const interval = setInterval(async () => {
+      const contactsMap: Record<string, any> = {};
+      
+      await Promise.all(
+        recommendations.map(async (brand: any) => {
+          // Only refresh pending brands
+          if (brandContacts[brand.id]?.status === 'pending') {
+            try {
+              const response = await fetch(`/api/enrich/get-contacts?brandName=${encodeURIComponent(brand.brand_name)}`);
+              if (response.ok) {
+                const data = await response.json();
+                contactsMap[brand.id] = {
+                  ...data,
+                  website_url: data.website_url || null,
+                  contact_page_url: data.contact_page_url || null,
+                };
+              }
+            } catch (error) {
+              console.error(`[Discover] Error refreshing contacts for ${brand.brand_name}:`, error);
+            }
+          } else {
+            // Keep existing data for non-pending brands
+            contactsMap[brand.id] = brandContacts[brand.id];
+          }
+        })
+      );
+
+      setBrandContacts(contactsMap);
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [brandContacts, recommendations, user?.id]);
+
   // Filter recommendations by category
   const filteredRecommendations = selectedCategory === 'All'
     ? parsedRecommendations.filter((r: any) => r.status !== 'ignored')
@@ -3410,11 +3565,22 @@ const CreatorDiscover = () => {
             Generate AI-powered brand recommendations based on your channel data.
           </p>
           
+          {/* Error from generation */}
+          {regenerateError && (
+            <div className="w-full p-3 rounded-lg bg-red-50 border border-red-200 text-left">
+              <p className="text-sm text-red-800">{regenerateError}</p>
+              <p className="text-xs text-red-600 mt-1">Try again or connect another platform for better matches.</p>
+            </div>
+          )}
+          
           {/* Primary CTA */}
           <div className="w-full pt-2">
             <Button 
               variant="primary"
-              onClick={() => handleGenerate(false)}
+              onClick={() => {
+                setRegenerateError(null);
+                handleGenerate(false);
+              }}
               disabled={generating}
               fullWidth
               className="w-full"
@@ -3516,75 +3682,6 @@ const CreatorDiscover = () => {
     }
   };
 
-  // Fetch brand contacts for all recommendations
-  useEffect(() => {
-    if (!recommendations || recommendations.length === 0) {
-      return;
-    }
-
-    const fetchBrandContacts = async () => {
-      const contactsMap: Record<string, any> = {};
-      
-      await Promise.all(
-        recommendations.map(async (brand: any) => {
-          try {
-            const response = await fetch(`/api/enrich/get-contacts?brandName=${encodeURIComponent(brand.brand_name)}`);
-            if (response.ok) {
-              const data = await response.json();
-              contactsMap[brand.id] = data;
-            }
-          } catch (error) {
-            console.error(`[Discover] Error fetching contacts for ${brand.brand_name}:`, error);
-          }
-        })
-      );
-
-      setBrandContacts(contactsMap);
-    };
-
-    fetchBrandContacts();
-  }, [recommendations]);
-
-  // Poll for updates every 5 seconds if any brands are pending enrichment
-  useEffect(() => {
-    const hasPending = Object.values(brandContacts).some(c => c?.status === 'pending');
-    if (!hasPending) {
-      return;
-    }
-
-    const interval = setInterval(async () => {
-      const contactsMap: Record<string, any> = {};
-      
-      await Promise.all(
-        recommendations.map(async (brand: any) => {
-          // Only refresh pending brands
-          if (brandContacts[brand.id]?.status === 'pending') {
-            try {
-              const response = await fetch(`/api/enrich/get-contacts?brandName=${encodeURIComponent(brand.brand_name)}`);
-              if (response.ok) {
-                const data = await response.json();
-                contactsMap[brand.id] = {
-                  ...data,
-                  website_url: data.website_url || null,
-                  contact_page_url: data.contact_page_url || null,
-                };
-              }
-            } catch (error) {
-              console.error(`[Discover] Error refreshing contacts for ${brand.brand_name}:`, error);
-            }
-          } else {
-            // Keep existing data for non-pending brands
-            contactsMap[brand.id] = brandContacts[brand.id];
-          }
-        })
-      );
-
-      setBrandContacts(contactsMap);
-    }, 5000);
-
-    return () => clearInterval(interval);
-  }, [brandContacts, recommendations, user?.id]);
-
   // Helper to get contact info array from brand_contacts data
   const getContactInfo = (brand: any) => {
     const contactData = brandContacts[brand.id];
@@ -3615,6 +3712,9 @@ const CreatorDiscover = () => {
 
   // Handle manual enrichment trigger
   const handleFindContact = async (brandName: string, brandId: string) => {
+    if (process.env.NODE_ENV === 'development') {
+      console.log('find_contact_clicked', { brandName, brandId });
+    }
     setEnrichingBrands(prev => new Set(prev).add(brandId));
     
     // Enable debug mode in development
@@ -3635,6 +3735,28 @@ const CreatorDiscover = () => {
       }
 
       const triggerData = await response.json();
+      
+      // If contact already exists, fetch and show immediately (no polling)
+      if (triggerData.alreadyComplete) {
+        try {
+          const contactResponse = await fetch(`/api/enrich/get-contacts?brandName=${encodeURIComponent(brandName)}`);
+          if (contactResponse.ok) {
+            const data = await contactResponse.json();
+            setBrandContacts(prev => ({
+              ...prev,
+              [brandId]: {
+                ...data,
+                website_url: data.website_url || null,
+                contact_page_url: data.contact_page_url || null,
+              },
+            }));
+          }
+        } catch (e) {
+          console.error('[Discover] Error fetching existing contact:', e);
+        }
+        setEnrichingBrands(prev => { const next = new Set(prev); next.delete(brandId); return next; });
+        return;
+      }
       
       // Log debug info in development
       if (isDebug && triggerData.debug) {
@@ -3698,9 +3820,32 @@ const CreatorDiscover = () => {
                 return next;
               });
             }
+          } else {
+            // Backend error (e.g. 500 from get-contacts) - stop spinning and show failed
+            const errBody = await contactResponse.json().catch(() => ({}));
+            clearInterval(pollInterval);
+            setBrandContacts(prev => ({
+              ...prev,
+              [brandId]: {
+                contacts: [],
+                status: 'failed',
+                error: (errBody as { error?: string }).error || `Request failed (${contactResponse.status})`,
+              },
+            }));
+            setEnrichingBrands(prev => { const next = new Set(prev); next.delete(brandId); return next; });
           }
         } catch (error) {
           console.error('[Discover] Error polling contacts:', error);
+          clearInterval(pollInterval);
+          setBrandContacts(prev => ({
+            ...prev,
+            [brandId]: {
+              contacts: [],
+              status: 'failed',
+              error: error instanceof Error ? error.message : 'Failed to fetch contact status',
+            },
+          }));
+          setEnrichingBrands(prev => { const next = new Set(prev); next.delete(brandId); return next; });
         }
 
         if (pollCount >= maxPolls) {
@@ -3761,34 +3906,57 @@ const CreatorDiscover = () => {
     }
   };
 
+  const [activeFilter, setActiveFilter] = useState('all');
+  const filters = [
+    { id: 'all', label: 'All' },
+    { id: 'best', label: 'Best match' },
+    { id: 'new', label: 'New' },
+  ];
+
+  // Map filtered recommendations to Figma format
+  const trendingBrands = filteredRecommendations
+    .sort((a: any, b: any) => (b.confidence || 0) - (a.confidence || 0))
+    .slice(0, 10)
+    .map((brand: any) => ({
+      id: brand.id,
+      name: brand.brand_name,
+      category: brand.category || brand.industry || 'General',
+      match: `${Math.round((brand.confidence || 0) * 100)}%`,
+      dealType: brand.deal_type === 'paid' ? 'Paid' : brand.deal_type === 'affiliate' ? 'Affiliate' : 'Gifted',
+      brand: brand, // Keep full brand object for onClick
+    }));
+
   return (
-    <Screen scroll={true}>
-      {/* Sticky Header */}
-      <div className="sticky top-0 z-30 bg-white/90 backdrop-blur-sm border-b border-gray-200">
-        <Container className="pt-4 pb-3">
-          {/* Header row */}
-          <div className="flex items-center justify-between gap-3 mb-3">
-            <h1 className="text-lg font-semibold text-gray-900 min-w-0 truncate">Discover</h1>
-            <div className="flex items-center gap-2 shrink-0">
-              <span className="text-xs text-gray-600 whitespace-nowrap">{filteredRecommendations.length} matches</span>
-              {parsedRecommendations.length > 0 && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    console.log('openGen true');
-                    setShowRegenerateModal(true);
-                  }}
-                  disabled={generating}
-                  className="p-2 rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50 shrink-0"
-                  title="Generate new matches"
-                >
-                  <Sparkles className="text-indigo-600" size={18} />
-                </button>
-              )}
-            </div>
+    <div className="min-h-screen bg-white pb-28">
+      <div className="px-6 pt-16 pb-4">
+        <div className="flex items-start justify-between mb-6">
+          <div className="flex-1">
+            <h1 className="text-[28px] font-semibold text-[#0F172A] mb-1">
+              Discover
+            </h1>
+            <p className="text-[15px] text-[#64748B]">
+              Brands looking for creators like you
+            </p>
           </div>
+        </div>
+
+        {/* Filters */}
+        <div className="flex gap-2">
+          {filters.map((filter) => (
+            <button
+              key={filter.id}
+              onClick={() => setActiveFilter(filter.id)}
+              className={`px-4 py-2 rounded-full text-[13px] font-medium transition-all ${
+                activeFilter === filter.id
+                  ? 'bg-[#0F172A] text-white'
+                  : 'bg-[#F8FAFC] text-[#64748B]'
+              }`}
+            >
+              {filter.label}
+            </button>
+          ))}
+        </div>
+      </div>
           
           {/* Compact tier pill */}
           {creatorMetrics && (
@@ -3822,81 +3990,23 @@ const CreatorDiscover = () => {
             </div>
           )}
 
-          {/* Filter chips row - horizontal scroll */}
-          {availableCategories.length > 0 && (
-            <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar -mx-5 px-5">
-              <button
-                type="button"
-                onClick={() => setSelectedCategory('All')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-full transition-all shrink-0 whitespace-nowrap ${
-                  selectedCategory === 'All'
-                    ? 'bg-indigo-600 text-white shadow-sm'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
-              >
-                All
-              </button>
-              {availableCategories.map(cat => (
-                <button
-                  key={cat}
-                  type="button"
-                  onClick={() => setSelectedCategory(cat)}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-full transition-all shrink-0 whitespace-nowrap ${
-                    selectedCategory === cat
-                      ? 'bg-indigo-600 text-white shadow-sm'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}
-                >
-                  {cat}
-                </button>
-              ))}
-            </div>
-          )}
-        </Container>
-      </div>
+      {/* Loading State */}
+      {generating && (
+        <div className="px-6 py-8 text-center">
+          <Loader2 className="animate-spin text-indigo-600 mx-auto mb-4" size={32} />
+          <p className="text-sm text-gray-600">{loadingMessages[loadingMessageIndex]}</p>
+        </div>
+      )}
 
-        {/* Loading Overlay with skeleton cards */}
-        {generating && (
-          <div className="absolute inset-0 bg-white/95 backdrop-blur-sm z-40 flex flex-col">
-            <div className="flex-1 flex items-center justify-center">
-              <div className="w-full max-w-sm px-4">
-                <div className="text-center space-y-4 mb-6">
-                  {/* Animated gradient bar */}
-                  <div className="w-full h-1 bg-gray-100 rounded-full overflow-hidden">
-                    <div className="h-full bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 rounded-full animate-pulse" style={{ width: '60%' }}></div>
-                  </div>
-                  
-                  {/* Rotating status message */}
-                  <p 
-                    key={loadingMessageIndex}
-                    className="text-sm font-medium text-gray-900 animate-in fade-in slide-in-from-bottom-2 duration-300"
-                  >
-                    {loadingMessages[loadingMessageIndex]}
-                  </p>
-                </div>
-
-                {/* Skeleton cards */}
-                <div className="space-y-3">
-                  {[1, 2, 3].map((i) => (
-                    <div key={i} className="p-4 rounded-xl border border-gray-200 bg-white animate-pulse">
-                      <div className="h-4 bg-gray-200 rounded w-2/3 mb-2"></div>
-                      <div className="h-3 bg-gray-100 rounded w-full mb-1"></div>
-                      <div className="h-3 bg-gray-100 rounded w-5/6"></div>
-                      <div className="flex gap-2 mt-3">
-                        <div className="h-8 bg-gray-100 rounded flex-1"></div>
-                        <div className="h-8 bg-gray-100 rounded flex-1"></div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-      {/* Scrollable content */}
-      <Container className="py-4 space-y-3">
-        {filteredRecommendations.sort((a: any, b: any) => (b.confidence || 0) - (a.confidence || 0)).map((brand: any) => {
+      {/* Content */}
+      {!generating && (
+        <div className="px-6 space-y-8">
+          <div>
+            <SectionLabel className="mb-4">Trending Opportunities</SectionLabel>
+            {trendingBrands.length > 0 ? (
+              <div className="bg-white border border-[rgba(15,23,42,0.06)] rounded-[14px] divide-y divide-[rgba(15,23,42,0.06)]">
+                {trendingBrands.map((item) => {
+                  const brand = item.brand;
           const isPitchAngleExpanded = expandedPitchAngles.has(brand.id);
           const brandSize = estimateBrandSize(brand);
           const likelihood = calculateResponseLikelihood(brand, sizeTier, brand.deal_type);
@@ -4231,7 +4341,11 @@ const CreatorDiscover = () => {
             </div>
           );
         })}
-      </Container>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )}
 
         {showPitchModal && (
           <PitchFlowModal 
@@ -4469,7 +4583,7 @@ const CreatorDiscover = () => {
           </div>
         </PhoneModal>
         )}
-    </Screen>
+    </div>
   );
 };
 
@@ -5250,12 +5364,19 @@ const CreatorAI = () => {
                       : "bg-white text-gray-900 border border-gray-200 shadow-sm"
                   }`}
                 >
-                  <p className="text-sm whitespace-pre-wrap leading-relaxed break-words">{msg.content}</p>
+                  <div className="text-sm leading-relaxed break-words space-y-2">
+                    {(msg.role === "assistant" ? sanitizeChatMessage(msg.content) : msg.content)
+                      .split(/\n\n+/)
+                      .filter(Boolean)
+                      .map((para, i) => (
+                        <p key={i} className="whitespace-pre-wrap">{para}</p>
+                      ))}
+                  </div>
                 </div>
                 {msg.role === "assistant" && (
                   <button
                     type="button"
-                    onClick={() => handleCopy(msg.content, idx)}
+                    onClick={() => handleCopy(sanitizeChatMessage(msg.content), idx)}
                     className="mt-1 text-xs text-gray-400 hover:text-gray-600 transition-colors flex items-center gap-1"
                   >
                     {copiedIndex === idx ? (
@@ -6059,25 +6180,24 @@ function ExlaApp() {
 
   // Refresh data silently when tab changes (handled in provider)
 
+  const mainTabContent = (
+    <div className="w-full h-full bg-white flex flex-col relative">
+      <AppBar onNavigate={setActiveTab} />
+      <div className="flex-1 w-full overflow-y-auto overflow-x-hidden">
+        {activeTab === 'home' && <CreatorHome onNavigate={setActiveTab} onShowNotifications={() => setShowNotifications(true)} onShowMediaKit={() => setShowPublicKit(true)} />}
+        {activeTab === 'discover' && <CreatorDiscover />}
+        {activeTab === 'ai' && <CreatorAI />}
+        {activeTab === 'deals' && <CreatorDeals onNavigate={setActiveTab} />}
+        {activeTab === 'profile' && <CreatorProfile onSignOut={handleSignOut} onShowPublicKit={() => setShowPublicKit(true)} onNavigateToSettings={() => setShowSettings(true)} />}
+      </div>
+      <BottomNav active={activeTab} onNavigate={setActiveTab} />
+    </div>
+  );
+
   return (
     <SettingsProvider>
       <UserDataProvider userId={user?.id || null}>
-        <div className="w-full h-full bg-white flex flex-col relative">
-          {/* Top App Bar */}
-          <AppBar onNavigate={setActiveTab} />
-          
-          {/* Main content area - scrollable */}
-          <div className="flex-1 w-full overflow-y-auto overflow-x-hidden">
-            {activeTab === 'home' && <CreatorHome onNavigate={setActiveTab} onShowNotifications={() => setShowNotifications(true)} />}
-            {activeTab === 'discover' && <CreatorDiscover />}
-            {activeTab === 'ai' && <CreatorAI />}
-            {activeTab === 'deals' && <CreatorDeals onNavigate={setActiveTab} />}
-            {activeTab === 'profile' && <CreatorProfile onSignOut={handleSignOut} onShowPublicKit={() => setShowPublicKit(true)} onNavigateToSettings={() => setShowSettings(true)} />}
-          </div>
-          
-          {/* Fixed bottom navigation inside phone frame */}
-          <BottomNav active={activeTab} onNavigate={setActiveTab} />
-        </div>
+        <AppGate tabContent={mainTabContent} />
       </UserDataProvider>
     </SettingsProvider>
   );

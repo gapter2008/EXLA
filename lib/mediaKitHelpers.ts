@@ -18,6 +18,7 @@ export interface MediaKit {
     comments?: number;
     publishedAt?: string;
     platform?: string;
+    thumbnail_url?: string | null;
   }>;
   suggested_rates: {
     min: number;
@@ -95,6 +96,7 @@ async function generateMediaKit(userId: string, profileName?: string): Promise<M
           comments: video.comments,
           publishedAt: video.publishedAt,
           platform: m.platform,
+          thumbnail_url: video.thumbnail_url ?? video.thumbnail ?? null,
         });
       });
     }

@@ -5,6 +5,7 @@
 
 import { supabaseAdmin } from "./supabaseAdmin";
 import { logScanStep, generateScanRunId } from "./scanLogging";
+import { getYoutubeThumbnailUrl } from "./youtubeThumbnail";
 
 export type Provider = "youtube" | "tiktok";
 
@@ -26,6 +27,7 @@ export interface ScanResult {
     title: string;
     views: number;
     url: string;
+    thumbnail_url?: string | null;
   }>;
   niche: {
     primary: string;
@@ -470,8 +472,14 @@ export async function scanProviderAccount(
         db_error: metricsError.message,
         error_code: metricsError.code || "METRICS_UPDATE_FAILED",
       });
-      console.warn(`Failed to update metrics: ${metricsError.message}`);
+      console.warn(`[scanProviderAccount] Failed to update creator_metrics for userId=${userId}, provider=${provider}:`, metricsError);
     } else {
+      console.log(`[scanProviderAccount] Updated creator_metrics for userId=${userId}, provider=${provider}:`, {
+        followers: scanData.stats.followers,
+        avg_views_10: scanData.stats.avg_views,
+        engagement_rate_10: scanData.stats.engagement_rate,
+        total_videos: scanData.stats.total_videos,
+      });
       logScanStep({
         scan_run_id: scanRunId,
         user_id: userId,
@@ -576,11 +584,12 @@ async function scanYouTube(
     user_id: userId,
     provider: provider as Provider,
     step: "fetch_youtube_channel",
-    endpoint: "channels?part=snippet,statistics&mine=true",
+    endpoint: "channels?part=snippet,statistics,contentDetails&mine=true",
   });
 
+  // IMPORTANT: include contentDetails so we can read the uploads playlist
   const channelResponse = await fetch(
-    "https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&mine=true",
+    "https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,contentDetails&mine=true",
     {
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -595,7 +604,7 @@ async function scanYouTube(
       user_id: userId,
       provider: provider as Provider,
       step: "fetch_youtube_channel",
-      endpoint: "channels?part=snippet,statistics&mine=true",
+      endpoint: "channels?part=snippet,statistics,contentDetails&mine=true",
       http_status: channelResponse.status,
       http_error: `YouTube API error: ${channelResponse.status}`,
       error_code: "YT_CHANNEL_FETCH_FAILED",
@@ -625,7 +634,7 @@ async function scanYouTube(
     user_id: userId,
     provider: provider as Provider,
     step: "fetch_youtube_channel",
-    endpoint: "channels?part=snippet,statistics&mine=true",
+    endpoint: "channels?part=snippet,statistics,contentDetails&mine=true",
     http_status: channelResponse.status,
     db_result: "success",
   });
@@ -765,10 +774,12 @@ async function scanYouTube(
       const engagement = views > 0 ? ((likes + comments) / views) * 100 : 0;
       totalEngagement += engagement;
 
+      const thumbnail_url = getYoutubeThumbnailUrl(video.snippet?.thumbnails) ?? undefined;
       topContent.push({
         title: video.snippet?.title || "Untitled",
         views: views,
         url: `https://www.youtube.com/watch?v=${video.id}`,
+        thumbnail_url: thumbnail_url || undefined,
       });
     }
 

@@ -39,6 +39,24 @@ export interface MediaKitData {
   };
   status: "ready" | "scanning" | "missing";
   scanJobId?: string;
+  /** ISO timestamp of latest creator_metrics or media_kits update */
+  updatedAt?: string | null;
+  /** AI-analyzed creator profile (headline, themes, brand fit) */
+  aiProfile?: {
+    headline: string | null;
+    bio: string | null;
+    niches: string[];
+    themes: string[];
+    content_formats: string[];
+    style_descriptors: string[];
+    audience_summary: string | null;
+    brand_fit: Array<{ category: string; reasoning?: string }>;
+    suggested_collab_types: string[];
+    confidence: number | null;
+    last_analysis_status: string | null;
+    last_analysis_error: string | null;
+    updated_at: string | null;
+  } | null;
 }
 
 /**
@@ -124,16 +142,24 @@ export async function getMediaKitData(userId: string): Promise<MediaKitData> {
     }
   }
 
-  // Fetch creator metrics (top videos, detailed stats)
+  // Fetch creator metrics (canonical source for audience/avg_views/engagement)
   const { data: metrics, error: metricsError } = await supabaseAdmin
     .from("creator_metrics")
-    .select("platform, followers, avg_views_10, engagement_rate_10, video_count, top_videos")
-    .eq("user_id", userId);
+    .select("platform, followers, avg_views_10, engagement_rate_10, video_count, top_videos, updated_at")
+    .eq("user_id", userId)
+    .order("updated_at", { ascending: false });
 
   // Fetch media kit (cached generated kit)
   const { data: mediaKitRow } = await supabaseAdmin
     .from("media_kits")
     .select("kit, updated_at")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  // Fetch AI creator profile (headline, themes, brand fit)
+  const { data: aiProfileRow } = await supabaseAdmin
+    .from("creator_ai_profiles")
+    .select("headline, bio, niches, themes, content_formats, style_descriptors, audience_summary, brand_fit, suggested_collab_types, confidence, last_analysis_status, last_analysis_error, updated_at")
     .eq("user_id", userId)
     .maybeSingle();
 
@@ -236,29 +262,30 @@ export async function getMediaKitData(userId: string): Promise<MediaKitData> {
     // Continue to build data section below - will return "ready" with empty/null values
   }
 
-  // Build platforms array (merge social_accounts + creator_metrics)
+  // Build platforms array: creator_metrics is source of truth for stats; social_accounts adds handle/avatar
   const platformMap = new Map<string, any>();
 
-  // Add from social_accounts first (most complete)
-  if (socialAccounts) {
-    socialAccounts.forEach((acc: any) => {
-      platformMap.set(acc.platform, {
-        platform: acc.platform,
-        handle: acc.handle || null,
-        followers: acc.followers ?? null,
-        avg_views_10: acc.avg_views_10 ?? null,
-        engagement_rate_10: acc.engagement_rate_10 ?? null,
-        total_videos: acc.total_videos ?? null,
-        avatar_url: acc.avatar_url || null,
+  // Prefer creator_metrics so Media Kit shows real numbers even if social_accounts stats are null
+  if (metrics && metrics.length > 0) {
+    metrics.forEach((metric: any) => {
+      const existing = platformMap.get(metric.platform);
+      platformMap.set(metric.platform, {
+        platform: metric.platform,
+        handle: existing?.handle ?? null,
+        followers: existing?.followers ?? metric.followers ?? null,
+        avg_views_10: existing?.avg_views_10 ?? metric.avg_views_10 ?? null,
+        engagement_rate_10: existing?.engagement_rate_10 ?? metric.engagement_rate_10 ?? null,
+        total_videos: existing?.total_videos ?? metric.video_count ?? null,
+        avatar_url: existing?.avatar_url ?? null,
       });
     });
   }
 
-  // Enhance with metrics data
-  if (metrics) {
-    metrics.forEach((metric: any) => {
-      const existing = platformMap.get(metric.platform) || {
-        platform: metric.platform,
+  // Overlay social_accounts for handle and avatar (social_accounts does not store followers/avg_views from scan)
+  if (socialAccounts) {
+    socialAccounts.forEach((acc: any) => {
+      const existing = platformMap.get(acc.platform) || {
+        platform: acc.platform,
         handle: null,
         followers: null,
         avg_views_10: null,
@@ -266,13 +293,14 @@ export async function getMediaKitData(userId: string): Promise<MediaKitData> {
         total_videos: null,
         avatar_url: null,
       };
-      
-      platformMap.set(metric.platform, {
+      platformMap.set(acc.platform, {
         ...existing,
-        followers: existing.followers ?? metric.followers ?? null,
-        avg_views_10: existing.avg_views_10 ?? metric.avg_views_10 ?? null,
-        engagement_rate_10: existing.engagement_rate_10 ?? metric.engagement_rate_10 ?? null,
-        total_videos: existing.total_videos ?? metric.video_count ?? null,
+        handle: acc.handle ?? existing.handle,
+        avatar_url: acc.avatar_url ?? existing.avatar_url,
+        followers: existing.followers ?? acc.followers ?? null,
+        avg_views_10: existing.avg_views_10 ?? acc.avg_views_10 ?? null,
+        engagement_rate_10: existing.engagement_rate_10 ?? acc.engagement_rate_10 ?? null,
+        total_videos: existing.total_videos ?? acc.total_videos ?? null,
       });
     });
   }
@@ -285,12 +313,20 @@ export async function getMediaKitData(userId: string): Promise<MediaKitData> {
     metrics.forEach((metric: any) => {
       if (metric.top_videos && Array.isArray(metric.top_videos)) {
         metric.top_videos.forEach((video: any) => {
+          const thumbnailUrl = video.thumbnail_url ?? video.thumbnail ?? null;
+          if (!thumbnailUrl && (video.url || video.title)) {
+            console.warn("[getMediaKitData] Top video missing thumbnail_url:", {
+              title: video.title,
+              url: video.url,
+              platform: metric.platform,
+            });
+          }
           topContent.push({
             title: video.title || "Untitled",
             url: video.url || "",
             views: video.views || 0,
             platform: metric.platform,
-            thumbnailUrl: video.thumbnail,
+            thumbnailUrl: thumbnailUrl ?? undefined,
             likes: video.likes,
             comments: video.comments,
           });
@@ -327,7 +363,7 @@ export async function getMediaKitData(userId: string): Promise<MediaKitData> {
         url: c.url || "",
         views: c.views || 0,
         platform: c.platform || "youtube",
-        thumbnailUrl: c.thumbnail,
+        thumbnailUrl: c.thumbnail_url ?? c.thumbnail ?? undefined,
         likes: c.likes,
         comments: c.comments,
       }))
@@ -345,9 +381,9 @@ export async function getMediaKitData(userId: string): Promise<MediaKitData> {
     username = platforms[0].handle;
   }
 
-  // Get bio from first social account
-  let bio = null;
-  if (socialAccounts && socialAccounts.length > 0 && socialAccounts[0].bio_description) {
+  // Get bio: prefer AI profile bio, else first social account
+  let bio = aiProfileRow?.bio ?? null;
+  if (!bio && socialAccounts && socialAccounts.length > 0 && socialAccounts[0].bio_description) {
     bio = socialAccounts[0].bio_description;
   }
 
@@ -357,11 +393,39 @@ export async function getMediaKitData(userId: string): Promise<MediaKitData> {
     avatar_url = platforms[0].avatar_url;
   }
 
+  // Latest updated_at from creator_metrics or media_kits for "Last updated" in UI
+  let updatedAt: string | null = null;
+  if (metrics && metrics.length > 0) {
+    const fromMetrics = metrics
+      .map((m: any) => m.updated_at)
+      .filter(Boolean) as string[];
+    if (fromMetrics.length > 0) updatedAt = fromMetrics.reduce((a, b) => (a > b ? a : b));
+  }
+  if (mediaKitRow?.updated_at && (!updatedAt || mediaKitRow.updated_at > updatedAt)) {
+    updatedAt = mediaKitRow.updated_at;
+  }
+
+  const aiProfile = aiProfileRow ? {
+    headline: aiProfileRow.headline ?? null,
+    bio: aiProfileRow.bio ?? null,
+    niches: (aiProfileRow.niches as string[]) ?? [],
+    themes: (aiProfileRow.themes as string[]) ?? [],
+    content_formats: (aiProfileRow.content_formats as string[]) ?? [],
+    style_descriptors: (aiProfileRow.style_descriptors as string[]) ?? [],
+    audience_summary: aiProfileRow.audience_summary ?? null,
+    brand_fit: (Array.isArray(aiProfileRow.brand_fit) ? aiProfileRow.brand_fit : []) as Array<{ category: string; reasoning?: string }>,
+    suggested_collab_types: (aiProfileRow.suggested_collab_types as string[]) ?? [],
+    confidence: aiProfileRow.confidence ?? null,
+    last_analysis_status: aiProfileRow.last_analysis_status ?? null,
+    last_analysis_error: aiProfileRow.last_analysis_error ?? null,
+    updated_at: aiProfileRow.updated_at ?? null,
+  } : null;
+
   return {
     profile: {
       name: profile?.name || null,
       username,
-      niche: creator?.niche || profile?.niche || cachedKit?.niche || null,
+      niche: creator?.niche || profile?.niche || cachedKit?.niche || aiProfile?.niches?.[0] || null,
       avatar_url,
       bio,
     },
@@ -374,6 +438,8 @@ export async function getMediaKitData(userId: string): Promise<MediaKitData> {
     topContent: finalTopContent,
     suggestedRateRange: finalSuggestedRates,
     status: "ready",
+    updatedAt: updatedAt || null,
+    aiProfile,
   };
 }
 

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
+import { sanitizeChatMessage } from "@/lib/chatMessageSanitizer";
 
 export const runtime = "nodejs";
 
@@ -74,6 +75,12 @@ export async function POST(req: NextRequest) {
 
       let contextText = `You are Exla Assistant, an AI that helps creators land brand deals. Your job is to turn creator stats into actionable advice that closes deals.
 
+OUTPUT FORMAT (strict):
+- Do not use markdown. No **, *, #, -, numbered lists (1. 2.), or bullet symbols.
+- Use short paragraphs separated by line breaks. At most 2 consecutive newlines.
+- Structure: 1–2 sentence opening summary, then 2–4 short paragraphs of insights, then 1 final sentence with a clear next step.
+- Tone: clean, concise, premium. Never say "as an AI" or "I cannot".
+
 CREATOR CONTEXT:
 `;
 
@@ -104,15 +111,20 @@ CREATOR CONTEXT:
       }
 
       contextText += `\nINSTRUCTIONS:
-- Be concise. Use bullets and short paragraphs.
-- Always provide clear next steps.
-- If asked for pitches: give 2 versions (Email + DM).
-- If asked for follow-ups: give 2 follow-up options.
-- If asked "which brand": pick 3 from available matches with reasons.
-- Focus on actionable advice that helps close deals.
-- Never output long walls of text.`;
+- Be concise. Use short paragraphs and line breaks only (no bullets, no numbers, no markdown).
+- Always end with one clear next step.
+- If asked for pitches: give 2 versions (Email + DM) as plain paragraphs.
+- If asked for follow-ups: give 2 follow-up options as short paragraphs.
+- If asked "which brand": pick 3 from available matches with reasons in plain text.
+- Focus on actionable advice that helps close deals. Never output long walls of text.`;
 
       systemMessages.push({ role: "system", content: contextText });
+    } else {
+      // Default system prompt for generic mode: same format rules, no creator context
+      systemMessages.push({
+        role: "system",
+        content: `You are Exla Assistant, helpful and concise. Do not use markdown: no **, *, #, -, numbered lists, or bullets. Use short paragraphs and line breaks only. Structure: brief summary, 2–4 short paragraphs, then one clear next step. Tone: clean, premium. Never say "as an AI".`,
+      });
     }
 
     // Combine system messages with user messages
@@ -131,16 +143,17 @@ CREATOR CONTEXT:
       temperature: 0.7,
     });
 
-    const assistantMessage = completion.choices[0]?.message?.content?.trim() || "";
+    const rawMessage = completion.choices[0]?.message?.content?.trim() || "";
 
-    if (!assistantMessage) {
+    if (!rawMessage) {
       return NextResponse.json(
         { error: "No response from OpenAI" },
         { status: 500 }
       );
     }
 
-    return NextResponse.json({ text: assistantMessage });
+    const text = sanitizeChatMessage(rawMessage);
+    return NextResponse.json({ text });
   } catch (error: any) {
     console.error("Chat API error:", error);
     return NextResponse.json(

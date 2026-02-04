@@ -7,6 +7,9 @@ import { useOnboarding } from '@/context/OnboardingContext';
 import { OnboardingPageGuard } from '@/components/OnboardingPageGuard';
 import { supabase } from '@/lib/supabaseClient';
 import { goOnboardingPush } from '@/lib/safeNavigate';
+import { Button } from '@/components/ui/Button';
+import { Input } from '@/components/ui/Input';
+import { ChevronLeft, Check } from 'lucide-react';
 
 export default function OnboardingProfilePage() {
   const router = useRouter();
@@ -111,63 +114,84 @@ export default function OnboardingProfilePage() {
     }
   };
 
+  const platforms = ['YouTube', 'TikTok', 'Instagram', 'Twitch'];
+
   return (
     <OnboardingPageGuard>
-    <div className="h-full flex flex-col overflow-hidden">
-      <div className="flex-1 flex items-center justify-center overflow-hidden">
-        <div className="w-full max-w-sm px-6 pb-28">
-          <div className="space-y-6">
-            <div className="space-y-2">
-              <h1 className="text-2xl font-bold text-gray-900">Tell us about yourself</h1>
-              <p className="text-sm text-gray-500">We'll use this to personalize your experience</p>
+      <div className="min-h-screen bg-white flex flex-col px-6 py-12">
+        {/* Step Indicator */}
+        <p className="text-[12px] text-[#64748B] uppercase tracking-[0.06em] mb-6">
+          Step 2 of 3
+        </p>
+
+        <button onClick={() => router.back()} className="mb-12 flex items-center gap-2 text-[#64748B]">
+          <ChevronLeft className="w-5 h-5" />
+        </button>
+
+        <div className="flex-1">
+          <h1 className="text-[28px] font-semibold text-[#0F172A] mb-8">
+            Tell us about yourself
+          </h1>
+          
+          <div className="space-y-8">
+            <div>
+              <Input
+                label="Your Name"
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Enter your name"
+                disabled={isLoading}
+                helperText="This appears on your public media kit"
+              />
             </div>
 
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Name <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full border border-gray-300 rounded-lg px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-black focus:border-transparent"
-                  placeholder="Your name"
-                />
+            <div>
+              <label className="block text-[13px] font-semibold text-[#0F172A] mb-3">
+                Primary Platform
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                {platforms.map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => setPrimaryPlatform(p)}
+                    disabled={isLoading}
+                    className={`h-12 rounded-[12px] text-[15px] font-semibold transition-all flex items-center justify-center gap-2 ${
+                      primaryPlatform === p
+                        ? 'bg-[#0F172A] text-white'
+                        : 'bg-[#F8FAFC] text-[#0F172A] border border-[rgba(15,23,42,0.06)]'
+                    }`}
+                  >
+                    {p}
+                    {primaryPlatform === p && <Check className="w-4 h-4" />}
+                  </button>
+                ))}
               </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Primary Platform <span className="text-red-500">*</span>
-                </label>
-                <select
-                  value={primaryPlatform}
-                  onChange={(e) => setPrimaryPlatform(e.target.value)}
-                  className="w-full border border-gray-300 rounded-lg px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-black focus:border-transparent bg-white"
-                >
-                  <option value="">Select a platform</option>
-                  <option value="TikTok">TikTok</option>
-                  <option value="Instagram">Instagram</option>
-                  <option value="YouTube">YouTube</option>
-                </select>
-              </div>
+              {primaryPlatform && (
+                <p className="text-[12px] text-[#94A3B8] mt-3">
+                  We use this to personalize your matches
+                </p>
+              )}
             </div>
-
-            {error && (
-              <p className="text-red-600 text-sm">{error}</p>
-            )}
-
-            <button
-              onClick={handleContinue}
-              disabled={isLoading}
-              className="w-full px-5 py-3.5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-semibold rounded-xl shadow-lg shadow-indigo-500/25 hover:shadow-xl hover:shadow-indigo-500/30 hover:from-indigo-700 hover:to-purple-700 transition-transform duration-150 active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isLoading ? 'Loading...' : 'Continue'}
-            </button>
           </div>
         </div>
+
+        {error && (
+          <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+            <p className="text-red-600 text-sm">{error}</p>
+          </div>
+        )}
+
+        <Button 
+          variant="primary" 
+          className="w-full" 
+          onClick={handleContinue}
+          isLoading={isLoading}
+          disabled={!name || !primaryPlatform || isLoading}
+        >
+          Continue
+        </Button>
       </div>
-    </div>
     </OnboardingPageGuard>
   );
 }

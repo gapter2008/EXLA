@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { generateAndStoreMediaKit } from "@/lib/mediaKitHelpers";
+import { getYoutubeThumbnailUrl } from "@/lib/youtubeThumbnail";
 
 export const runtime = "nodejs";
 
@@ -101,6 +102,7 @@ function calculateMetrics(videos: any[]) {
     const engagement = views > 0 ? ((likes + comments) / views) * 100 : 0;
     totalEngagement += engagement;
 
+    const thumbnail_url = getYoutubeThumbnailUrl(video.snippet?.thumbnails) ?? undefined;
     topVideos.push({
       title: video.snippet?.title || "Untitled",
       url: `https://www.youtube.com/watch?v=${video.id}`,
@@ -108,6 +110,7 @@ function calculateMetrics(videos: any[]) {
       likes: likes,
       comments: comments,
       publishedAt: video.snippet?.publishedAt || null,
+      thumbnail_url,
     });
   }
 

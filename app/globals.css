@@ -12,6 +12,17 @@
   --brand-muted: 262 30% 92%;
   --brand-ring: 262 83% 58%;
   --brand-accent: 262 83% 95%;
+
+  /* Figma Design System Colors */
+  --exla-text-primary: #0F172A;
+  --exla-text-secondary: #64748B;
+  --exla-text-muted: #94A3B8;
+  --exla-bg-white: #FFFFFF;
+  --exla-bg-gray: #F8FAFC;
+  --exla-bg-gray-alt: #F8F9FB;
+  --exla-border: rgba(15, 23, 42, 0.06);
+  --exla-gradient-start: #6366F1;
+  --exla-gradient-end: #8B5CF6;
 }
 
 html {
@@ -288,6 +299,19 @@ html {
   word-break: normal;
   overflow-wrap: break-word;
   hyphens: none;
+}
+
+/* Figma Typography Baseline - Ensure consistent font rendering */
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* Prevent mid-word wrapping in UI elements */
+button, a, span, label {
+  word-break: keep-all;
+  overflow-wrap: normal;
 }
 
 /* Utility class for label text - prevent awkward wrapping */

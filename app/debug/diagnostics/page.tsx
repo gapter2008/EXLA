@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
+type SyncStatus = "idle" | "loading" | "success" | "error";
+
 /**
  * Development diagnostics page
  * Shows app configuration, env vars status, and user state
@@ -14,6 +16,14 @@ export default function DiagnosticsPage() {
   const [oauthUrls, setOauthUrls] = useState<Record<string, string>>({});
   const [userId, setUserId] = useState<string | null>(null);
   const [socialAccounts, setSocialAccounts] = useState<any[]>([]);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>("idle");
+  const [syncMessage, setSyncMessage] = useState<string>("");
+  const [syncMetrics, setSyncMetrics] = useState<{
+    followers: number | null;
+    avg_views_10: number | null;
+    engagement_rate_10: number | null;
+    total_videos: number | null;
+  } | null>(null);
 
   useEffect(() => {
     // Only show in development
@@ -158,6 +168,77 @@ export default function DiagnosticsPage() {
                   </li>
                 ))}
               </ul>
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section className="mb-8">
+        <h2 className="text-xl font-semibold mb-4">Sync YouTube (dev)</h2>
+        <div className="bg-gray-50 p-4 rounded-lg space-y-3">
+          <p className="text-sm text-gray-600">
+            Run the YouTube scan pipeline now and see computed metrics. Use after connecting YouTube to refresh creator_metrics.
+          </p>
+          <button
+            type="button"
+            onClick={async () => {
+              if (!userId) {
+                setSyncStatus("error");
+                setSyncMessage("Sign in first");
+                return;
+              }
+              setSyncStatus("loading");
+              setSyncMessage("");
+              setSyncMetrics(null);
+              try {
+                const { data: { session } } = await supabase.auth.getSession();
+                if (!session?.access_token) {
+                  setSyncStatus("error");
+                  setSyncMessage("No session – sign in again");
+                  return;
+                }
+                const res = await fetch("/api/sync/youtube", {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${session.access_token}`,
+                  },
+                });
+                const data = await res.json().catch(() => ({}));
+                if (res.ok && data.success) {
+                  setSyncStatus("success");
+                  setSyncMessage("Synced");
+                  setSyncMetrics(data.metrics ?? null);
+                } else {
+                  setSyncStatus("error");
+                  setSyncMessage(data.error ?? `HTTP ${res.status}`);
+                }
+              } catch (err: any) {
+                setSyncStatus("error");
+                setSyncMessage(err?.message ?? "Request failed");
+              }
+            }}
+            disabled={syncStatus === "loading" || !userId}
+            className="px-4 py-2 bg-indigo-600 text-white rounded-lg font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg-indigo-700"
+          >
+            {syncStatus === "loading" ? "Syncing…" : "Sync YouTube Now"}
+          </button>
+          {syncStatus === "success" && (
+            <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm">
+              <p className="font-semibold text-green-800 mb-2">{syncMessage}</p>
+              {syncMetrics && (
+                <ul className="text-green-700 space-y-1">
+                  <li>Subscribers: {syncMetrics.followers?.toLocaleString() ?? "—"}</li>
+                  <li>Avg views (10): {syncMetrics.avg_views_10?.toLocaleString() ?? "—"}</li>
+                  <li>Engagement rate: {syncMetrics.engagement_rate_10 != null ? `${syncMetrics.engagement_rate_10.toFixed(2)}%` : "—"}</li>
+                  <li>Total videos: {syncMetrics.total_videos?.toLocaleString() ?? "—"}</li>
+                </ul>
+              )}
+            </div>
+          )}
+          {syncStatus === "error" && (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+              {syncMessage}
             </div>
           )}
         </div>

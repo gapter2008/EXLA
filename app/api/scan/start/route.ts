@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { scanProviderAccount } from "@/lib/scanProviderAccount";
 import { generateAndStoreMediaKit } from "@/lib/mediaKitHelpers";
 import { buildCreatorProfile } from "@/lib/profileBuilder";
+import { runCreatorProfileAnalysis } from "@/lib/runCreatorProfileAnalysis";
 
 export const runtime = "nodejs";
 export const dynamic = 'force-dynamic';
@@ -16,6 +17,7 @@ export async function POST(req: NextRequest) {
     // Parse request body first
     const body = await req.json().catch(() => ({}));
     let userId: string | null = body.userId || null;
+    const fromOAuth = body.fromOAuth === true; // When true, create new job and run pipeline even if there is an active job (OAuth callback placeholder)
 
     // Try to get from auth header if not in body
     if (!userId) {
@@ -62,24 +64,25 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Check for existing active scan job
-    const { data: activeJob } = await supabaseAdmin
-      .from("scan_jobs")
-      .select("id, status, progress, platform")
-      .eq("user_id", userId)
-      .in("status", ["queued", "running"])
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    // Check for existing active scan job (skip when called from OAuth so we always start the real pipeline)
+    if (!fromOAuth) {
+      const { data: activeJob } = await supabaseAdmin
+        .from("scan_jobs")
+        .select("id, status, progress, platform")
+        .eq("user_id", userId)
+        .in("status", ["queued", "running"])
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-    if (activeJob) {
-      // Return existing job
-      return NextResponse.json({
-        ok: true,
-        scan_job_id: activeJob.id,
-        status: activeJob.status,
-        platform: activeJob.platform,
-      });
+      if (activeJob) {
+        return NextResponse.json({
+          ok: true,
+          scan_job_id: activeJob.id,
+          status: activeJob.status,
+          platform: activeJob.platform,
+        });
+      }
     }
 
     // Find connected platform to scan
@@ -122,86 +125,83 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Start scan pipeline asynchronously (don't await)
-    // CRITICAL: Status MUST move: queued -> running -> complete OR failed
-    (async () => {
+    // Run pipeline: either await (fromOAuth) so scan completes before redirect, or fire-and-forget
+    const runPipeline = async (): Promise<{ status: "complete" | "failed"; error?: string }> => {
       try {
-        // Step 1: Update status to running (progress 10%)
         await supabaseAdmin
           .from("scan_jobs")
           .update({ status: "running", progress: 10 })
           .eq("id", scanJob.id);
 
-        // Step 2: Run scan pipeline (this fetches profile and stats)
         await scanProviderAccount(userId, platform as "youtube" | "tiktok");
 
-        // Step 3: Update progress to 70% after scan pipeline
         await supabaseAdmin
           .from("scan_jobs")
           .update({ progress: 70 })
           .eq("id", scanJob.id);
 
-        // Step 4: Generate media kit
         const { data: profile } = await supabaseAdmin
           .from("profiles")
           .select("name")
           .eq("id", userId)
           .maybeSingle();
-
         const profileName = profile?.name || undefined;
         await generateAndStoreMediaKit(userId, profileName);
 
-        // Step 5: Build creator profile (non-blocking - don't fail scan if this fails)
         try {
           await buildCreatorProfile(userId);
         } catch (profileErr: any) {
           console.warn("[Scan Start] Creator profile build failed (non-blocking):", profileErr.message);
-          // Continue - scan can complete without creator profile
         }
 
-        // Step 6: Mark job as complete (status MUST be complete)
+        try {
+          const analysisResult = await runCreatorProfileAnalysis(userId);
+          if (!analysisResult.success) {
+            console.warn("[Scan Start] AI creator profile analysis failed (non-blocking):", analysisResult.error);
+          }
+        } catch (analysisErr: any) {
+          console.warn("[Scan Start] AI creator profile analysis error (non-blocking):", analysisErr?.message);
+        }
+
         await supabaseAdmin
           .from("scan_jobs")
           .update({ status: "complete", progress: 100 })
           .eq("id", scanJob.id);
 
         console.log(`[Scan Start] Scan completed for user ${userId}, platform ${platform}`);
+        return { status: "complete" };
       } catch (scanError: any) {
-        // CRITICAL: On ANY error, status MUST be set to failed
-        console.error("[Scan Start] Scan pipeline failed:", scanError);
-        
-        // Truncate error message to reasonable length (for database storage)
         const errorMessage = (scanError.message || "Scan failed").substring(0, 500);
-        
-        // Log full error stack in development
-        if (process.env.NODE_ENV === 'development') {
+        console.error("[Scan Start] Scan pipeline failed:", scanError);
+        if (process.env.NODE_ENV === "development") {
           console.error("[Scan Start] Full error stack:", scanError.stack);
         }
-        
-        // Update status to failed - MUST happen even if this update fails
         try {
           await supabaseAdmin
             .from("scan_jobs")
-            .update({
-              status: "failed",
-              error: errorMessage,
-              progress: 0,
-            })
+            .update({ status: "failed", error: errorMessage, progress: 0 })
             .eq("id", scanJob.id);
         } catch (updateErr: any) {
-          // If update fails, log but don't throw (we're already in catch block)
-          console.error(`[Scan Start] CRITICAL: Failed to update scan_jobs status to failed:`, updateErr);
+          console.error("[Scan Start] CRITICAL: Failed to update scan_jobs status to failed:", updateErr);
         }
-        
-        // Log error for debugging (don't swallow errors - re-throw would cause unhandled rejection)
-        console.error(`[Scan Start] Error stored in scan_job ${scanJob.id}:`, errorMessage);
-        
-        // Note: We don't re-throw here because this is an async IIFE and we don't want
-        // to cause unhandled promise rejection. The error has been stored in scan_jobs.
+        return { status: "failed", error: errorMessage };
       }
-    })();
+    };
 
-    // Return immediately with job ID
+    if (fromOAuth) {
+      // OAuth callback: await pipeline so scan completes before we return. Prevents serverless from killing the process before completion.
+      const result = await runPipeline();
+      return NextResponse.json({
+        ok: result.status === "complete",
+        scan_job_id: scanJob.id,
+        status: result.status,
+        platform: platform,
+        error: result.error ?? undefined,
+      });
+    }
+
+    // Non-OAuth (e.g. Try Again from UI): start pipeline in background, return immediately
+    runPipeline().catch((err) => console.error("[Scan Start] Background pipeline error:", err));
     return NextResponse.json({
       ok: true,
       scan_job_id: scanJob.id,

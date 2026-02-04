@@ -58,16 +58,14 @@ export async function POST(req: NextRequest) {
       .eq('brand_id', finalBrandId)
       .single();
 
-    // If we already have website_url (complete or partial), consider it a success
+    // If contact info already exists (complete or partial), return so UI can show it without polling
     if (existingContacts && (existingContacts.enrichment_status === 'complete' || existingContacts.enrichment_status === 'partial')) {
-      if (existingContacts.website_url) {
-        return NextResponse.json({
-          success: true,
-          brandId: finalBrandId,
-          message: "Contact info already exists",
-          alreadyComplete: true,
-        });
-      }
+      return NextResponse.json({
+        success: true,
+        brandId: finalBrandId,
+        message: "Contact info already exists",
+        alreadyComplete: true,
+      });
     }
 
     // Enqueue enrichment job (or retry if failed)

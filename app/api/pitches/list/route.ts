@@ -4,10 +4,14 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 export const runtime = "nodejs";
 export const dynamic = 'force-dynamic'; // Prevent Next.js caching of user-specific data
 
+// Pitches table schema (0005): id, user_id, brand_name, brand_website, channel, subject, body, suggested_rate, deliverable, status, created_at, updated_at.
+// GUARDRAIL: Do NOT add brand_id, deal_type, or generated_pitch - those columns do not exist on pitches.
+
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = req.nextUrl;
     const userId = searchParams.get("userId");
+    const statusFilter = searchParams.get("status"); // optional: draft, sent, replied, closed, ignored
 
     if (!userId) {
       return NextResponse.json({ error: "Missing userId parameter" }, { status: 400 });
@@ -17,11 +21,17 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Database not configured" }, { status: 500 });
     }
 
-    const { data: pitches, error } = await supabaseAdmin
+    let query = supabaseAdmin
       .from("pitches")
-      .select("id, user_id, brand_id, status, channel, deliverable, deal_type, generated_pitch, created_at, updated_at")
+      .select("id, user_id, brand_name, brand_website, channel, subject, body, suggested_rate, deliverable, status, created_at, updated_at")
       .eq("user_id", userId)
-      .order("updated_at", { ascending: false });
+      .order("created_at", { ascending: false });
+
+    if (statusFilter && ["draft", "sent", "replied", "closed", "ignored"].includes(statusFilter)) {
+      query = query.eq("status", statusFilter);
+    }
+
+    const { data: pitches, error } = await query;
 
     if (error) {
       console.error("Error fetching pitches:", error);

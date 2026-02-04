@@ -6,6 +6,8 @@ import { goOnboardingPush } from '@/lib/safeNavigate';
 import { useAuth } from '@/hooks/useAuth';
 import { useOnboarding } from '@/context/OnboardingContext';
 import { OnboardingPageGuard } from '@/components/OnboardingPageGuard';
+import { Page } from '@/components/layout/Page';
+import { Button } from '@/components/ui/Button';
 
 export default function OnboardingWelcomePage() {
   const router = useRouter();
@@ -32,29 +34,41 @@ export default function OnboardingWelcomePage() {
 
   return (
     <OnboardingPageGuard>
-      <div className="h-full flex flex-col overflow-hidden">
-        <div className="flex-1 flex items-center justify-center overflow-hidden">
-          <div className="w-full max-w-sm px-6 pb-28 text-center">
-            <div className="space-y-8">
-              <div className="space-y-4">
-                <h1 className="text-4xl font-bold text-gray-900 tracking-tight">
-                  Let's get you set up
-                </h1>
-                <p className="text-base text-gray-500 font-normal">
-                  Create a brand-ready profile in minutes
-                </p>
-              </div>
+      <div className="min-h-screen bg-white flex flex-col px-6 py-16">
+        {/* Step Indicator */}
+        <p className="text-[12px] text-[#64748B] uppercase tracking-[0.06em] mb-8">
+          Step 1 of 3
+        </p>
 
-              <button
-                onClick={handleContinue}
-                disabled={isLoading}
-                className="w-full px-5 py-3.5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-semibold rounded-xl shadow-lg shadow-indigo-500/25 hover:shadow-xl hover:shadow-indigo-500/30 hover:from-indigo-700 hover:to-purple-700 transition-transform duration-150 active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isLoading ? 'Loading...' : 'Continue'}
-              </button>
-            </div>
-          </div>
+        <img 
+          src="/brand/logo.png" 
+          alt="Exla" 
+          className="w-16 h-16 mb-16"
+        />
+        
+        <div className="flex-1">
+          <h1 className="text-[28px] font-semibold text-[#0F172A] mb-3">
+            Let's get you set up
+          </h1>
+          
+          <p className="text-[15px] text-[#64748B] mb-2">
+            This takes under a minute
+          </p>
+          
+          <p className="text-[13px] text-[#94A3B8]">
+            Most creators finish in under 60 seconds
+          </p>
         </div>
+
+        <Button 
+          variant="primary" 
+          className="w-full" 
+          onClick={handleContinue}
+          isLoading={isLoading}
+          disabled={isLoading}
+        >
+          Continue
+        </Button>
       </div>
     </OnboardingPageGuard>
   );

@@ -39,6 +39,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Database not configured" }, { status: 500 });
     }
 
+    // Pitches table has no brand_id - only brand_name, brand_website (schema 0005)
     const insertData = {
       user_id: userId,
       brand_name: brandName,
@@ -46,8 +47,8 @@ export async function POST(req: NextRequest) {
       channel: channel,
       subject: channel === 'email' ? (subject || null) : null,
       body: pitchBody,
-      suggested_rate: suggestedRate || null,
-      deliverable: deliverable || null,
+      suggested_rate: suggestedRate ?? null,
+      deliverable: deliverable ?? null,
       status: 'draft',
     };
     // #region agent log

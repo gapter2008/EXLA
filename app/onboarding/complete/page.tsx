@@ -4,8 +4,11 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useOnboarding } from '@/context/OnboardingContext';
 import { supabase } from '@/lib/supabaseClient';
-import { FileText, Users, TrendingUp, DollarSign } from 'lucide-react';
+import { CheckCircle2 } from 'lucide-react';
 import { OnboardingPageGuard } from '@/components/OnboardingPageGuard';
+import { Page } from '@/components/layout/Page';
+import { Button } from '@/components/ui/Button';
+import { Card } from '@/components/ui/Card';
 
 export default function OnboardingCompletePage() {
   const router = useRouter();
@@ -113,78 +116,40 @@ export default function OnboardingCompletePage() {
 
   return (
     <OnboardingPageGuard>
-    <div className="h-full flex flex-col overflow-hidden">
-      <div className="flex-1 flex items-center justify-center overflow-hidden">
-        <div className="w-full max-w-sm px-6 pb-28">
-          <div className="space-y-8">
-            <div className="text-center space-y-4">
-              <div className="inline-flex items-center justify-center w-20 h-20 bg-green-100 rounded-full mb-4">
-                <FileText size={40} className="text-green-600" />
-              </div>
-              <h1 className="text-3xl font-bold text-gray-900">You're all set!</h1>
-              <p className="text-gray-600">
-                Your brand-ready profile is ready to share
-              </p>
-            </div>
-
-            {loading ? (
-              <div className="text-center py-8">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600 mx-auto"></div>
-                <p className="mt-4 text-gray-600 text-sm">Loading your stats...</p>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="bg-gray-50 rounded-lg p-4 space-y-3">
-                  {stats && stats.followers !== null && (
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 text-gray-700">
-                        <Users size={18} />
-                        <span className="text-sm font-medium">Followers</span>
-                      </div>
-                      <span className="text-sm font-semibold text-gray-900">
-                        {stats.followers.toLocaleString()}
-                      </span>
-                    </div>
-                  )}
-
-                  {stats && stats.niche && (
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 text-gray-700">
-                        <TrendingUp size={18} />
-                        <span className="text-sm font-medium">Niche</span>
-                      </div>
-                      <span className="text-sm font-semibold text-gray-900">
-                        {stats.niche}
-                      </span>
-                    </div>
-                  )}
-
-                  {stats && stats.rateRange && (
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 text-gray-700">
-                        <DollarSign size={18} />
-                        <span className="text-sm font-medium">Rate Range</span>
-                      </div>
-                      <span className="text-sm font-semibold text-gray-900">
-                        {stats.rateRange}
-                      </span>
-                    </div>
-                  )}
-                </div>
-
-                <button
-                  onClick={handleViewMediaKit}
-                  disabled={buttonLoading}
-                  className="w-full px-5 py-3.5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-semibold rounded-xl shadow-lg shadow-indigo-500/25 hover:shadow-xl hover:shadow-indigo-500/30 hover:from-indigo-700 hover:to-purple-700 transition-transform duration-150 active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {buttonLoading ? 'Loading...' : 'View Full Media Kit'}
-                </button>
-              </div>
-            )}
+      <div className="min-h-screen bg-white flex flex-col items-center justify-center px-6">
+        <div className="flex flex-col items-center max-w-[320px]">
+          {/* Success Icon */}
+          <div className="w-16 h-16 bg-green-50 rounded-full flex items-center justify-center mb-8">
+            <CheckCircle2 className="w-8 h-8 text-green-600" />
           </div>
+          
+          {/* Title */}
+          <h1 className="text-[28px] font-semibold text-[#0F172A] mb-3 text-center">
+            Your media kit is ready
+          </h1>
+          
+          {/* Subtitle */}
+          <p className="text-[15px] text-[#64748B] text-center mb-12">
+            Brands can now discover and contact you
+          </p>
+
+          {/* Primary CTA */}
+          <Button 
+            variant="primary" 
+            className="w-full mb-4" 
+            onClick={handleViewMediaKit}
+            isLoading={buttonLoading}
+            disabled={buttonLoading}
+          >
+            View my media kit
+          </Button>
+          
+          {/* Helper text */}
+          <p className="text-[12px] text-[#94A3B8] text-center">
+            You can update this anytime
+          </p>
         </div>
       </div>
-    </div>
     </OnboardingPageGuard>
   );
 }

@@ -6,25 +6,8 @@ import { goOnboarding } from "@/lib/safeNavigate";
 import { Loader2, Youtube } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
 import { useOnboarding } from "@/context/OnboardingContext";
-
-// Button component (matching ExlaApp style)
-const Button = ({ children, onClick, variant = 'primary', fullWidth, disabled, className = '' }: { children: React.ReactNode; onClick?: () => void; variant?: 'primary' | 'secondary'; fullWidth?: boolean; disabled?: boolean; className?: string }) => {
-  const baseStyles = "px-4 py-2.5 text-sm font-medium rounded-lg transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed active:scale-98";
-  const variants: Record<string, string> = {
-    primary: "bg-indigo-600 text-white hover:bg-indigo-700",
-    secondary: "bg-white border border-gray-300 text-gray-900 hover:bg-gray-50",
-  };
-  
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className={`${baseStyles} ${variants[variant]} ${fullWidth ? 'w-full' : ''} ${className}`}
-    >
-      {children}
-    </button>
-  );
-};
+import { Page } from "@/components/layout/Page";
+import { Button } from "@/components/ui/Button";
 
 const statusMessages = [
   "Scanning your account",
@@ -103,7 +86,13 @@ function ScanningPageContent() {
       return;
     }
 
-    // Record start time for timeout detection
+    // Reset UI when we have a valid job and no URL error (e.g. after Try Again)
+    if (!errorParam) {
+      setError(null);
+      setStatus("queued");
+      setProgress(0);
+      setIsTimedOut(false);
+    }
     setStartTime(Date.now());
     setIsTimedOut(false);
 
@@ -124,7 +113,10 @@ function ScanningPageContent() {
         const response = await fetch(url);
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
-          throw new Error(errorData.error || "Failed to fetch scan status");
+          const msg = response.status === 404
+            ? "Scan session expired or not found. Use Try Again to start a new scan."
+            : (errorData.error || "Failed to fetch scan status");
+          throw new Error(msg);
         }
 
         const data = await response.json();
@@ -249,80 +241,60 @@ function ScanningPageContent() {
   };
 
   return (
-    <div className="h-full flex flex-col overflow-hidden">
-      <div className="flex-1 flex items-center justify-center overflow-hidden">
-        <div className="w-full max-w-sm px-6 pb-28">
-          <div className="space-y-8">
-          <div className="text-center">
-            <div className="inline-flex items-center justify-center w-20 h-20 bg-indigo-100 rounded-full mb-6">
-              <Youtube size={40} className="text-indigo-600" />
-            </div>
-            <h1 className="text-3xl font-bold text-gray-900 mb-2">Scanning Your Account</h1>
-            <p className="text-gray-600">This will just take a moment...</p>
+    <div className="min-h-screen bg-white flex flex-col items-center justify-center px-6">
+      <div className="flex flex-col items-center max-w-[280px]">
+        <img 
+          src="/brand/logo.png" 
+          alt="Exla" 
+          className="w-16 h-16 mb-12 opacity-60"
+        />
+        
+        <h1 className="text-[24px] font-semibold text-[#0F172A] mb-2 text-center">
+          Setting up your account
+        </h1>
+        
+        <p className="text-[15px] text-[#64748B] text-center mb-16">
+          This will just take a moment
+        </p>
+
+        <div className="w-full">
+          <p className="text-[12px] text-[#64748B] uppercase tracking-[0.06em] mb-3 text-center">
+            Building your creator profile
+          </p>
+          
+          <div className="h-1 bg-[#F1F5F9] rounded-full overflow-hidden mb-4">
+            <div 
+              className="h-full bg-[#0F172A] transition-all duration-300 ease-out"
+              style={{ width: `${progress > 0 ? progress : 0}%` }}
+            />
           </div>
-
-          {status === "failed" ? (
-            <div className="space-y-4">
-              <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
-                <p className="text-sm font-semibold text-red-900 mb-1">Scan Failed</p>
-                <p className="text-xs text-red-700">
-                  {error || "Something went wrong during the scan"}
-                </p>
-              </div>
-              <Button onClick={handleTryAgain} fullWidth>
-                Try Again
-              </Button>
-            </div>
-          ) : isTimedOut && status === "running" ? (
-            <div className="space-y-4">
-              <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-                <p className="text-sm font-semibold text-yellow-900 mb-1">Still working...</p>
-                <p className="text-xs text-yellow-700">
-                  The scan is taking longer than expected. It may still be processing in the background.
-                </p>
-              </div>
-              <Button onClick={handleTryAgain} variant="secondary" fullWidth>
-                Try Again
-              </Button>
-            </div>
-          ) : (
-            <div className="space-y-6">
-              {/* Progress bar - show real progress if available, otherwise indeterminate */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-gray-600">{statusMessages[statusMessageIndex]}...</span>
-                  {progress > 0 ? (
-                    <span className="font-medium text-gray-900">{progress}%</span>
-                  ) : (
-                    <span className="font-medium text-gray-500">—</span>
-                  )}
-                </div>
-                <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
-                  {progress > 0 ? (
-                    <div
-                      className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-300"
-                      style={{ width: `${progress}%` }}
-                    />
-                  ) : (
-                    <div className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 animate-pulse" style={{ width: '60%' }} />
-                  )}
-                </div>
-              </div>
-
-              {/* Animated spinner */}
-              <div className="flex justify-center">
-                <Loader2 className="animate-spin text-indigo-600" size={32} />
-              </div>
-
-              {status === "complete" && (
-                <div className="text-center">
-                  <p className="text-sm text-green-600 font-medium">✓ Scan complete!</p>
-                </div>
-              )}
-            </div>
-          )}
-          </div>
+          
+          <p className="text-[14px] text-[#0F172A] font-medium text-center">
+            {status === "failed" ? (
+              error || "Something went wrong during the scan"
+            ) : isTimedOut && status === "running" ? (
+              "Still working..."
+            ) : (
+              statusMessages[statusMessageIndex] || "Analyzing audience"
+            )}
+          </p>
         </div>
+
+        {status === "failed" && (
+          <div className="mt-8 w-full space-y-4">
+            <Button onClick={handleTryAgain} variant="primary" className="w-full">
+              Try Again
+            </Button>
+          </div>
+        )}
+
+        {isTimedOut && status === "running" && (
+          <div className="mt-8 w-full space-y-4">
+            <Button onClick={handleTryAgain} variant="secondary" className="w-full">
+              Try Again
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );
